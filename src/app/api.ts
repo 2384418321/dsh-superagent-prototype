@@ -39,7 +39,7 @@ export interface Api {
   'GET policy/history': { response: HistoryView }
   'POST policy-sync/:id': { response: { policy: unknown } }
   'POST setup/check': { response: { restarting: true } }
-  'POST master/rotate': { body: { expectedMasterId: string; targetMasterId?: string; handoff: string }; response: { masterId: string } }
+  'POST master/rotate': { body: { expectedMasterId: string; targetMasterId?: string; handoff: string; manageProcessing?: boolean }; response: { masterId: string } }
   'GET models': { response: ModelCatalog }
   'GET prompts': { query?: { revision?: number; offset?: number }; response: PromptsView }
   'PUT prompts': { body: { config: PromptConfig; baseRevision: number }; response: { revision: number; context_delivery: Delivery } }

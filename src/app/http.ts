@@ -53,7 +53,7 @@ export interface HttpHost {
   checkSetup(): void
   requestPass(): void
   models(): Promise<ModelCatalog>
-  rotateMaster(expected: string, handoff: string, target?: string): Promise<{ masterId: string } | { error: string }>
+  rotateMaster(expected: string, handoff: string, target?: string, manageProcessing?: boolean): Promise<{ masterId: string } | { error: string }>
 }
 /**
  * Represents a client-facing 400 or 404 error raised during management route parsing or lookup.
@@ -156,8 +156,8 @@ function routes(runtime: HttpHost): Routes {
   return {
     'GET state': () => stateView(runtime),
     'POST master/rotate': async ({ body }) => {
-      const input = z.object({ expectedMasterId: z.string().min(1), targetMasterId: z.string().min(1).optional(), handoff: z.string().min(1).max(100000) }).strict().parse(await body())
-      const result = await runtime.rotateMaster(input.expectedMasterId, input.handoff, input.targetMasterId)
+      const input = z.object({ expectedMasterId: z.string().min(1), targetMasterId: z.string().min(1).optional(), handoff: z.string().min(1).max(100000), manageProcessing: z.boolean().optional() }).strict().parse(await body())
+      const result = await runtime.rotateMaster(input.expectedMasterId, input.handoff, input.targetMasterId, input.manageProcessing)
       if ('error' in result) throw new RouteError(409, result.error)
       return result
     },

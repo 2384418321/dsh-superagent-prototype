@@ -1,6 +1,6 @@
 /** Root panel shell: header with global search and glossary, top-level navigation tabs, and active route view. */
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import type { SearchView } from './api.ts'
+import { ApiError, type SearchView } from './api.ts'
 import { Button, Dot, Icon, Input, Modal, SegmentedTabs } from './controls.tsx'
 import type { DeploymentForm } from './deployment.tsx'
 import { EvalStatus } from './eval.tsx'
@@ -17,7 +17,7 @@ import { actorName, errorText, reasonLabel, valueLabel, type T, readableMarkers 
 import { ThreadPage } from './thread.tsx'
 import { TicketPage } from './ticket.tsx'
 import { TriggerStatus } from './trigger.tsx'
-import { When } from './widgets.tsx'
+import { ConfirmButton, When } from './widgets.tsx'
 
 export interface AppProps {
   t: T; openSession: (sessionId: string) => Promise<void>
@@ -99,7 +99,7 @@ function SearchResults({ result, query, onClose }: { result: SearchView; query: 
 }
 
 function Header({ masterId }: { masterId: string | undefined }) {
-  const { t, call, openSession, notify } = usePanel()
+  const { t, call, openSession, notify, restart } = usePanel()
   const [glossary, setGlossary] = useState(false)
   const [query, setQuery] = useState('')
   const [result, setResult] = useState<{ query: string; value: SearchView }>()
@@ -133,6 +133,16 @@ function Header({ masterId }: { masterId: string | undefined }) {
         onClick={() => setGlossary(true)} />
       <Button variant="outline" size="sm" icon={<Icon name="session" size={14} />} disabled={!masterId}
         onClick={() => { if (masterId) openSession(masterId).catch(failure => notify(errorText(failure))) }}>{t('openMaster')}</Button>
+      {masterId && <ConfirmButton variant="outline" label={t('rotateMaster')} title={t('rotateMaster')} message={t('rotateMasterConfirm', { id: masterId })}
+        onConfirm={async () => {
+          try {
+            await call('POST master/rotate', { body: { expectedMasterId: masterId, handoff: t('rotateMasterHandoff', { id: masterId }), manageProcessing: true } })
+          } catch (error) {
+            if (error instanceof ApiError && error.status === 409) throw new Error(t('rotateMasterBlocked'))
+            throw error
+          }
+          restart(); notify(t('rotateMasterStarted'))
+        }} />}
     </div>
     <Glossary open={glossary} onClose={() => setGlossary(false)} />
   </header>
