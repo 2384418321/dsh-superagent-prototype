@@ -100,6 +100,7 @@ export class Effects {
     this.stopped = true
     await Promise.allSettled([...this.tasks].map(task => task.done))
   }
+  resume(): void { this.stopped = false; this.kick() }
   private dispatch(): void {
     if (!this.started || this.stopped) return
     for (const [kind, handler] of this.handlers) {

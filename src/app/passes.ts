@@ -31,6 +31,7 @@ export class Passes {
     clearInterval(this.timer)
     return Promise.allSettled([this.pumping, this.pumpAgain])
   }
+  resume(): void { if (this.stopped) { this.stopped = false; this.start() } }
   receive(trigger: Trigger): ReceiveResult {
     if (this.host.closing()) throw new Error('Orchestrator is stopping')
     const result = this.host.engine.receive(trigger)
