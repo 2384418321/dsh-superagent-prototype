@@ -7,6 +7,32 @@ import { usePanel, mount, remount, settle, all, click, type, text, field } from 
 import { server, found } from './fixtures/panel-server.ts'
 
 usePanel()
+it('switches the main session from the panel and requests a safe resume', async () => {
+  await mount()
+  await click('更换主会话')
+  expect(text()).toContain('当前主会话')
+  await click('确定')
+  expect(server.requests.find(request => request.path === 'master/rotate')).toMatchObject({ body: {
+    expectedMasterId: 'master', manageProcessing: true,
+  } })
+})
+
+it('keeps a pre-existing processing pause during a session switch', async () => {
+  server.settings = { ...server.settings, paused: true }
+  await mount()
+  await click('更换主会话')
+  await click('确定')
+  expect(server.requests.some(request => request.path === 'executor/pause')).toBe(false)
+  expect(server.requests.find(request => request.path === 'master/rotate')).toMatchObject({ body: { manageProcessing: true } })
+})
+
+it('explains a refused switch in the panel', async () => {
+  server.rotationError = true
+  await mount()
+  await click('更换主会话')
+  await click('确定')
+  expect(text()).toContain('暂时无法更换')
+})
 it('states why a filtered search result has no Thread instead of opening an empty one', async () => {
   server.search = { items: [found('e9', '2026-09-20T00:00:00Z', { source: 'github', actor: { source: 'github', id: 'someone' },
     preview: 'issue text', threads: ['github:7'],

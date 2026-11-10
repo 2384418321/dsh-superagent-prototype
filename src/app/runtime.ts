@@ -193,8 +193,8 @@ export class Runtime extends Service implements SourceHost {
     return ticketEnvironment({ deployment, sources, settings: this.store.settings(), ticket, ...trigger ? { trigger } : {} })
   }
   checkSetup(): void { this.setup.check() }
-  async rotateMaster(expected: string, handoff: string, target?: string): Promise<{ masterId: string } | { error: string }> {
-    if (this.rotating || this.closing() || !this.store.settings().paused || expected !== this.masterId)
+  async rotateMaster(expected: string, handoff: string, target?: string, manageProcessing = false): Promise<{ masterId: string } | { error: string }> {
+    if (this.rotating || this.closing() || (!manageProcessing && !this.store.settings().paused) || expected !== this.masterId)
       return { error: 'Pause dispatch and verify the current main session before rotation.' }
     const ids = [this.masterId, ...this.store.tickets.list().map(ticket => workerSessionId(ticket.id))]
     if (target) {
@@ -206,7 +206,7 @@ export class Runtime extends Service implements SourceHost {
     const jobs = this.ctx.get('jobs') as { list(id: string): readonly { owner?: string; status: string }[] } | undefined
     const subagents = this.ctx.get('subagents') as { listChildren(id: string): Promise<readonly { id: string }[]> } | undefined
     if (!jobs || !subagents) return { error: 'Cannot verify managed background work.' }
-    if (this.rotating || this.closing() || !this.store.settings().paused || expected !== this.masterId)
+    if (this.rotating || this.closing() || (!manageProcessing && !this.store.settings().paused) || expected !== this.masterId)
       return { error: 'Pause dispatch and verify the current main session before rotation.' }
     const notice = (message: unknown) => {
       const source = (message as { source?: { kind?: string; form?: string } }).source
@@ -227,23 +227,34 @@ export class Runtime extends Service implements SourceHost {
     }
     this.rotating = true
     const resume = () => { this.closingFlag = false; this.effects.resume(); this.passes.resume() }
+    let ownedPauseRevision: number | undefined
+    const restorePause = async () => {
+      if (ownedPauseRevision !== undefined && this.store.settings().paused && this.store.blockRevision('pause') === ownedPauseRevision)
+        await this.settings.pause(false, 'tool')
+    }
     try {
-      if (await busy() || !this.store.settings().paused) return { error: 'A managed session or its background work is still running, or dispatch resumed.' }
+      if (manageProcessing && !this.store.settings().paused) {
+        const revision = this.store.blockRevision('pause')
+        ownedPauseRevision = revision + 1
+        await this.settings.pause(true, 'tool')
+      }
+      if (await busy() || !this.store.settings().paused) { await restorePause(); return { error: 'A managed session or its background work is still running, or dispatch resumed.' } }
       this.closingFlag = true
       await Promise.all([this.passes.stop(), this.effects.drain()])
-      if (await busy() || !this.store.settings().paused) { resume(); return { error: 'A managed session became active or dispatch resumed; rotation cancelled.' } }
+      if (await busy() || !this.store.settings().paused) { resume(); await restorePause(); return { error: 'A managed session became active or dispatch resumed; rotation cancelled.' } }
       const masterId = target ?? `orchestrator-${randomUUID()}`
       const pending = this.ctx.agents.get(this.masterId as SessionId)!.inbox.nextStep.filter(notice)
       const text = pending.length ? `${handoff}\n\n旧主会话未读通知（仅作为待核事实）：\n${JSON.stringify(pending)}` : handoff
-      if (text.length > 100000) { resume(); return { error: 'The handoff and pending notices exceed the size limit.' } }
+      if (text.length > 100000) { resume(); await restorePause(); return { error: 'The handoff and pending notices exceed the size limit.' } }
       this.store.atomic(() => {
         this.store.set(KV.runtime.masterId, masterId)
-        this.store.set(KV.runtime.handoff, { masterId, text })
+        this.store.set(KV.runtime.handoff, { masterId, text, ...(ownedPauseRevision !== undefined ? { resumePauseRevision: ownedPauseRevision } : {}) })
       })
       this.setup.restart()
       return { masterId }
     } catch (error) {
       if (this.closingFlag) resume()
+      await restorePause()
       throw error
     } finally { this.rotating = false }
   }
@@ -267,7 +278,6 @@ export class Runtime extends Service implements SourceHost {
     const handoff = this.store.get(KV.runtime.handoff)
     if (handoff?.masterId === this.masterId) {
       await this.sessions.prompt(this.masterId, `rotation:${this.masterId}`, handoff.text, 'queue')
-      this.store.delete(KV.runtime.handoff)
     }
     for (const id of this.settings.syncable()) await this.settings.sync(id).catch(() => { /* sync() records its failure in health. */ })
     // If stop() was called while awaiting setup, session creation, or policy sync, do not start background loops.
@@ -276,6 +286,11 @@ export class Runtime extends Service implements SourceHost {
     this.passes.start()
     this.effects.start()
     this.runtimeHealth.set({ state: 'ready', detail: 'Orchestrator is ready', at: now() })
+    if (handoff?.masterId === this.masterId) {
+      if (handoff.resumePauseRevision !== undefined && this.store.settings().paused && this.store.blockRevision('pause') === handoff.resumePauseRevision)
+        await this.settings.pause(false, 'tool')
+      this.store.delete(KV.runtime.handoff)
+    }
   }
   private httpHost(): HttpHost {
     const runtime = this
@@ -285,7 +300,7 @@ export class Runtime extends Service implements SourceHost {
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),
       checkSetup: () => { setup.check() }, requestPass: () => { passes.request() }, models: () => this.ctx.sessionController.modelCatalog(),
-      rotateMaster: (expected, handoff, target) => runtime.rotateMaster(expected, handoff, target) }
+      rotateMaster: (expected, handoff, target, manageProcessing) => runtime.rotateMaster(expected, handoff, target, manageProcessing) }
   }
   /** Idempotent stop; concurrent or repeated calls share the same shutdown promise. */
   stop(): Promise<void> { return this.stopping ??= this.shutdown() }
