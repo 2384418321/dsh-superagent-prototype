@@ -271,7 +271,7 @@ export class Sessions {
    * Whether a Session runs the router preset: as DSH's preset registry last selected it, read through the session projection
    * on a DSH whose registry has no `presetForSession`, else as it was created; `standard`, the safer caps, when unreadable.
    */
-  private routed(agent: Agent): boolean {
+  routed(agent: Agent): boolean {
     try {
       const presets = this.ctx.get('agentPresets') as { presetForSession?: (session: Agent['session']) => string | null } | undefined
       const projections = this.ctx.get('sessionProjections') as { stateOf?: (session: Agent['session'], key: string) => unknown } | undefined

@@ -12,6 +12,7 @@ import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { lockSync } from 'proper-lockfile'
 import { Engine, key, reasonText, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
 import { allowedSender, settingsPolicy } from '../policy.ts'
@@ -79,6 +80,7 @@ export class Runtime extends Service implements SourceHost {
   private readonly disposers: (() => void)[] = []
   private releaseLock?: () => Promise<void>
   private closingFlag = false
+  private rotating = false
   private stopping?: Promise<void>
   private readonly sourceDeps: SourceContextDeps
   private readonly toolHost: MainToolsHost & ExecutorToolsHost
@@ -191,6 +193,60 @@ export class Runtime extends Service implements SourceHost {
     return ticketEnvironment({ deployment, sources, settings: this.store.settings(), ticket, ...trigger ? { trigger } : {} })
   }
   checkSetup(): void { this.setup.check() }
+  async rotateMaster(expected: string, handoff: string, target?: string): Promise<{ masterId: string } | { error: string }> {
+    if (this.rotating || this.closing() || !this.store.settings().paused || expected !== this.masterId)
+      return { error: 'Pause dispatch and verify the current main session before rotation.' }
+    const ids = [this.masterId, ...this.store.tickets.list().map(ticket => workerSessionId(ticket.id))]
+    if (target) {
+      if (ids.includes(target)) return { error: 'The replacement must be a distinct main session.' }
+      const resolved = await this.ctx.sessionController.resolveAgent(target as SessionId)
+      if ('error' in resolved || !this.sessions.routed(resolved.agent)) return { error: 'The replacement must be an existing router session.' }
+      ids.push(target)
+    }
+    const jobs = this.ctx.get('jobs') as { list(id: string): readonly { owner?: string; status: string }[] } | undefined
+    const subagents = this.ctx.get('subagents') as { listChildren(id: string): Promise<readonly { id: string }[]> } | undefined
+    if (!jobs || !subagents) return { error: 'Cannot verify managed background work.' }
+    if (this.rotating || this.closing() || !this.store.settings().paused || expected !== this.masterId)
+      return { error: 'Pause dispatch and verify the current main session before rotation.' }
+    const notice = (message: unknown) => {
+      const source = (message as { source?: { kind?: string; form?: string } }).source
+      return source?.kind === 'dsh-superagent' && source.form === 'notice'
+    }
+    const busy = async () => {
+      if (this.executor.activeCount()) return true
+      if (!this.ctx.agents.get(this.masterId as SessionId)) return true
+      for (const id of ids) {
+        const agent = this.ctx.agents.get(id as SessionId)
+        if (agent && agent.status !== 'idle') return true
+        if (id === this.masterId && agent && (agent.inbox.nextTurn.length || agent.inbox.nextStep.some(message => !notice(message)))) return true
+        if (id === target && agent && (agent.inbox.nextTurn.length || agent.inbox.nextStep.length)) return true
+        if (jobs?.list(id).some(job => job.owner === id && (job.status === 'running' || job.status === 'stopping'))) return true
+        if (subagents && (await subagents.listChildren(id)).some(child => this.ctx.agents.get(child.id as SessionId))) return true
+      }
+      return false
+    }
+    this.rotating = true
+    const resume = () => { this.closingFlag = false; this.effects.resume(); this.passes.resume() }
+    try {
+      if (await busy() || !this.store.settings().paused) return { error: 'A managed session or its background work is still running, or dispatch resumed.' }
+      this.closingFlag = true
+      await Promise.all([this.passes.stop(), this.effects.drain()])
+      if (await busy() || !this.store.settings().paused) { resume(); return { error: 'A managed session became active or dispatch resumed; rotation cancelled.' } }
+      const masterId = target ?? `orchestrator-${randomUUID()}`
+      const pending = this.ctx.agents.get(this.masterId as SessionId)!.inbox.nextStep.filter(notice)
+      const text = pending.length ? `${handoff}\n\n旧主会话未读通知（仅作为待核事实）：\n${JSON.stringify(pending)}` : handoff
+      if (text.length > 100000) { resume(); return { error: 'The handoff and pending notices exceed the size limit.' } }
+      this.store.atomic(() => {
+        this.store.set(KV.runtime.masterId, masterId)
+        this.store.set(KV.runtime.handoff, { masterId, text })
+      })
+      this.setup.restart()
+      return { masterId }
+    } catch (error) {
+      if (this.closingFlag) resume()
+      throw error
+    } finally { this.rotating = false }
+  }
   receive(trigger: Trigger): ReceiveResult { return this.passes.receive(trigger) }
   idle(): Promise<void> { return this.passes.idle() }
   pump(): Promise<void> { return this.passes.pump() }
@@ -208,6 +264,11 @@ export class Runtime extends Service implements SourceHost {
     this.sessions.install()
     this.executor.install()
     await this.sessions.ensure(this.masterId, this.machine.stateDir, 'dsh-superagent orchestrator', 'orchestrator')
+    const handoff = this.store.get(KV.runtime.handoff)
+    if (handoff?.masterId === this.masterId) {
+      await this.sessions.prompt(this.masterId, `rotation:${this.masterId}`, handoff.text, 'queue')
+      this.store.delete(KV.runtime.handoff)
+    }
     for (const id of this.settings.syncable()) await this.settings.sync(id).catch(() => { /* sync() records its failure in health. */ })
     // If stop() was called while awaiting setup, session creation, or policy sync, do not start background loops.
     if (this.closing()) return
@@ -223,7 +284,8 @@ export class Runtime extends Service implements SourceHost {
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),
-      checkSetup: () => { setup.check() }, requestPass: () => { passes.request() }, models: () => this.ctx.sessionController.modelCatalog() }
+      checkSetup: () => { setup.check() }, requestPass: () => { passes.request() }, models: () => this.ctx.sessionController.modelCatalog(),
+      rotateMaster: (expected, handoff, target) => runtime.rotateMaster(expected, handoff, target) }
   }
   /** Idempotent stop; concurrent or repeated calls share the same shutdown promise. */
   stop(): Promise<void> { return this.stopping ??= this.shutdown() }

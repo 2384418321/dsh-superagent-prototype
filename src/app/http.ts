@@ -53,12 +53,13 @@ export interface HttpHost {
   checkSetup(): void
   requestPass(): void
   models(): Promise<ModelCatalog>
+  rotateMaster(expected: string, handoff: string, target?: string): Promise<{ masterId: string } | { error: string }>
 }
 /**
  * Represents a client-facing 400 or 404 error raised during management route parsing or lookup.
  * Route handlers throw it when request bodies are malformed or target records are missing, and registerHttp serializes its status and message in the HTTP response.
  */
-class RouteError extends Error { constructor(readonly status: 400 | 404, message: string) { super(message) } }
+class RouteError extends Error { constructor(readonly status: 400 | 404 | 409, message: string) { super(message) } }
 async function readBody(req: IncomingMessage, maxBytes = 128 * 1024): Promise<unknown> {
   let size = 0; const chunks: Buffer[] = []
   for await (const chunk of req) {
@@ -154,6 +155,12 @@ function routes(runtime: HttpHost): Routes {
   const promptBody = (input: { body: (maxBytes?: number) => Promise<unknown> }) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096)
   return {
     'GET state': () => stateView(runtime),
+    'POST master/rotate': async ({ body }) => {
+      const input = z.object({ expectedMasterId: z.string().min(1), targetMasterId: z.string().min(1).optional(), handoff: z.string().min(1).max(100000) }).strict().parse(await body())
+      const result = await runtime.rotateMaster(input.expectedMasterId, input.handoff, input.targetMasterId)
+      if ('error' in result) throw new RouteError(409, result.error)
+      return result
+    },
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
       executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),
     'GET search': ({ query }) => search(views(runtime), query.q ?? '', runtime.sourceLinks),
