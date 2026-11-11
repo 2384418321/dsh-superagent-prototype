@@ -1,9 +1,15 @@
-import { expect, it, vi } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Config, type Machine } from '../src/deployment.ts'
 import { apply } from '../src/index.ts'
 
 // Stub Runtime to capture the resolved Machine settings and restart callback.
 const runtimes = vi.hoisted(() => [] as { machine: Machine; restart: () => void }[])
+const dirs: string[] = []
+const stateDir = () => { const dir = mkdtempSync(join(tmpdir(), 'superagent-index-')); dirs.push(dir); return dir }
+afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 vi.mock('../src/app/runtime.ts', () => ({ Runtime: class {
   ready = Promise.resolve()
   constructor(_ctx: unknown, readonly machine: Machine, readonly restart: () => void) { runtimes.push(this) }
@@ -30,7 +36,7 @@ function context() {
 
 it('reads a limit DSH commits a new value of without a restart, and asks DSH to generate no settings page', async () => {
   const { ctx, handlers, configure } = context()
-  const config = Config({ stateDir: '/srv/state', promptMaxChars: 5000 })
+  const config = Config({ stateDir: stateDir(), promptMaxChars: 5000 })
   await apply(ctx as never, config)
   expect(configure).toHaveBeenCalledExactlyOnceWith({ auto: false }, ctx.fiber)
   const { machine } = runtimes.at(-1)!
@@ -45,7 +51,7 @@ it('asks DSH to read its settings entry again once a restart it started finished
   const { ctx, describe } = context()
   let finish = () => {}
   ctx.fiber.restart.mockImplementation(() => new Promise<void>(resolve => { finish = resolve }))
-  await apply(ctx as never, Config({ stateDir: '/srv/state' }))
+  await apply(ctx as never, Config({ stateDir: stateDir() }))
   // Saving a Source account change restarts dsh-superagent, which re-runs setup and refreshes the settings descriptor.
   runtimes.at(-1)!.restart()
   await Promise.resolve()

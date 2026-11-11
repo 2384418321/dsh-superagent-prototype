@@ -8,7 +8,7 @@ import { runFeishu } from '../src/sources/feishu-loops.ts'
 import { commentTrigger, githubAddress, githubChannel, issueTrigger, type GithubComment, type GithubIssue } from '../src/sources/github-trigger.ts'
 import { claimPull, observePull, pullEndNotices, pullOf, ticketBranch, type Pull } from '../src/sources/github-pull.ts'
 import { ciCounts, ciFact, ciSummary } from '../src/sources/github-read.ts'
-import { apply as applyGithub, githubKind, pollFailure, pollRound } from '../src/sources/github.ts'
+import { apply as applyGithub, githubKind, pollFailure, pollRound, sweepIfDue } from '../src/sources/github.ts'
 import { pollThreads as pollGithubThreads } from '../src/sources/github.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { cursorAt, POLL_HORIZON_MS } from '../src/sources/poll.ts'
@@ -1024,7 +1024,72 @@ it('reports GitHub as failing only after the configured number of consecutive fa
   expect(pollFailure(2, 3, eof)).toBeUndefined()
   expect(pollFailure(3, 3, eof)).toEqual({ state: 'error', detail: '3 consecutive failed polls; last: Error: Get "https://api.github.com/x": EOF', code: 'pollFailures', values: { count: '3', error: 'Error: Get "https://api.github.com/x": EOF' } })
   expect(githubKind.schema.parse({})).toEqual({ repository: '', cli: '', pollSeconds: 60, failuresBeforeError: 3, observeIssues: false,
-    observePulls: false, observeComments: false, observeCi: false })
+    observePulls: false, observeComments: false, observeCi: false, sweepLabel: '', sweepIncludeAttention: false, sweepEverySeconds: 900, sweepMaxPerRound: 1,
+    sweepMaxOpenTickets: 3 })
+})
+it('sweeps failed and unclassified issues beyond the first page without reassigning live or PR-backed work', async () => {
+  const h = host()
+  h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources, github: { enabled: true,
+    config: { observeIssues: true, sweepLabel: 'status:ready', sweepIncludeAttention: true, sweepMaxPerRound: 5 } } } })
+  const make = (number: number, labels: string[], assignees: string[] = []) => ({ number, title: `Issue ${number}`,
+    url: `https://example/${number}`, updatedAt: '2026-11-07T10:00:00Z', labels: labels.map(name => ({ name })),
+    assignees: assignees.map(login => ({ login })) })
+  const items = [...Array.from({ length: 100 }, (_, i) => make(i + 1, ['status:released'])),
+    make(101, ['status:acceptance-not-passed']), make(102, ['status:needs-triage']), make(103, []),
+    make(104, ['status:acceptance-not-passed'], ['someone']), make(105, ['status:acceptance-not-passed'])]
+  const calls: string[][] = []
+  vi.spyOn(h.commands, 'withSignal').mockReturnValue(h.commands)
+  vi.spyOn(h.commands, 'run').mockImplementation(async (_program, args) => {
+    calls.push(args)
+    if (args[0] === 'api') {
+      if (args[1]?.includes('/commits?')) return JSON.stringify([{ sha: 'a'.repeat(40) }])
+      const apiItems = items.map(item => ({ ...item, html_url: item.url, updated_at: item.updatedAt }))
+      return JSON.stringify([apiItems.slice(0, 100), [...apiItems.slice(100), { ...apiItems[0], pull_request: {} }]])
+    }
+    if (args[0] === 'pr') return JSON.stringify(args.includes('105 in:body') ? [{ number: 1 }] : [])
+    throw new Error('unexpected command')
+  })
+  await sweepIfDue(h.context(githubKind), new AbortController().signal)
+  expect(calls[0]).toContain('--paginate')
+  expect(calls[0]).toContain('--slurp')
+  expect(h.receive.mock.calls.map(([trigger]) => trigger.meta.number)).toEqual([101, 102, 103])
+  await sweepIfDue(h.context(githubKind), new AbortController().signal)
+  expect(h.receive).toHaveBeenCalledTimes(3)
+  h.store.close()
+})
+it('reassesses a previously emitted candidate after the default branch advances', async () => {
+  const h = host()
+  h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources, github: { enabled: true,
+    config: { observeIssues: true, sweepLabel: 'status:ready', sweepIncludeAttention: true } } } })
+  let head = 'a'.repeat(40)
+  const item = { number: 777, title: 'Ready', html_url: 'https://example/777', updated_at: '2026-11-07T10:00:00Z',
+    labels: [{ name: 'status:ready' }], assignees: [] }
+  vi.spyOn(h.commands, 'withSignal').mockReturnValue(h.commands)
+  vi.spyOn(h.commands, 'run').mockImplementation(async (_program, args) => {
+    if (args[0] === 'api' && args[1]?.includes('/commits?')) return JSON.stringify([{ sha: head }])
+    if (args[0] === 'api') return JSON.stringify([[item]])
+    if (args[0] === 'pr') return '[]'
+    throw new Error('unexpected command')
+  })
+  const ctx = h.context(githubKind)
+  await sweepIfDue(ctx, new AbortController().signal)
+  expect(h.receive).toHaveBeenCalledTimes(1)
+  const stored = ctx.state.get(KV.github.sweep)!
+  ctx.state.set(KV.github.sweep, { ...stored, at: '2020-01-01T00:00:00Z' })
+  await sweepIfDue(ctx, new AbortController().signal)
+  expect(h.receive).toHaveBeenCalledTimes(1)
+  head = 'b'.repeat(40)
+  h.store.threads.save({ key: 'github:777', ref: { source: 'github', id: '777' }, createdAt: '2026-11-07T10:00:00Z',
+    subscriptions: [], correlated: [], pending: ['existing-evaluation'], meta: {} })
+  const next = ctx.state.get(KV.github.sweep)!
+  ctx.state.set(KV.github.sweep, { ...next, at: '2020-01-01T00:00:00Z' })
+  await sweepIfDue(ctx, new AbortController().signal)
+  expect(h.receive).toHaveBeenCalledTimes(1)
+  h.store.threads.save({ ...h.store.threads.get('github:777')!, pending: [] })
+  ctx.state.set(KV.github.sweep, { ...ctx.state.get(KV.github.sweep)!, at: '2020-01-01T00:00:00Z' })
+  await sweepIfDue(ctx, new AbortController().signal)
+  expect(h.receive).toHaveBeenCalledTimes(2)
+  h.store.close()
 })
 describe('feishu event consumer', () => {
   let dir: string

@@ -2,6 +2,10 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-settings'
 import { Runtime } from './app/runtime.ts'
+import { retryStartupLock } from './app/startup-lock.ts'
+import { setTimeout as sleep } from 'node:timers/promises'
+import { mkdirSync } from 'node:fs'
+import { lockSync } from 'proper-lockfile'
 import { Config, machineOf, type DeploymentConfig } from './deployment.ts'
 
 export const name = 'dsh-superagent'
@@ -18,6 +22,19 @@ export async function apply(ctx: Context, config: DeploymentConfig): Promise<voi
   const restart = (): void => {
     ctx.fiber.restart().then(() => { ctx.get('settings')?.describe() }).catch((error: unknown) => { ctx.logger.error('dsh-superagent restart failed: %s', String(error)) })
   }
+  const pending = new AbortController()
+  ctx.effect(() => () => pending.abort())
+  try {
+    mkdirSync(machine.stateDir, { recursive: true, mode: 0o700 })
+    await retryStartupLock(() => { const release = lockSync(machine.stateDir, { stale: 30_000 }); release() }, async () => {
+      ctx.logger.warn('dsh-superagent state lock held; retrying once after its stale interval')
+      await sleep(31_000, undefined, { signal: pending.signal })
+    })
+  } catch (error) {
+    if (pending.signal.aborted) return
+    throw error
+  }
+  if (pending.signal.aborted) return
   const runtime = new Runtime(ctx, machine, restart)
   ctx.effect(() => async () => { await runtime.stop() })
   await runtime.ready

@@ -44,6 +44,8 @@ export const KV = {
    * counts reported CI changes so each produces a distinct Trigger ID).
    */
   github: { since: record<string>('github-since'), retries: record<Record<string, Retry>>('github-retry'),
+    /** Last sweep time and the swept Trigger IDs already emitted, so a restart never proposes the same Issue twice. */
+    sweep: record<{ at: string; emitted: string[] }>('github-sweep'),
     cursor: family<string, [number: number]>('github-cursor:'),
     stream: family<{ since: string; started: Record<string, string>; etag?: string }, [stream: string]>('github-stream:'),
     branchCi: record<{ branch?: string; failures?: string[]; revision: number }>('github-branch-ci'),

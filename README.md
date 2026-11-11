@@ -10,6 +10,16 @@ It is also a way of working with an agent: **take as little human attention as p
 
 ## Setup
 
+### DeepSeek Harness 客户端安装
+
+在客户端“插件 → 添加插件”中输入本仓库地址并安装，启用 Superagent 后从侧栏打开面板。仓库包含已构建的插件文件，无需在目标电脑手动构建。
+
+首次使用时在面板的“设置 → 来源”配置有权限的 GitHub 仓库及已登录的 GitHub CLI，再配置接单规则和执行目录。默认状态目录为当前用户的 `~/.dsh/state/dsh-superagent`；如需迁移现有工单，先停止原实例并配置原状态目录，不能让两个实例同时调度。
+
+评估和执行模型默认继承当前客户端的默认模型，也可在面板分别选择客户端已有的提供商、模型和思考强度。已有会话保留自己的模型选择；更改默认值不会自动改写它们。
+
+本插件运行在客户端宿主进程中，完成 GitHub 设置后会修改该进程的 `PATH` 和 Git 配置环境变量，影响同一客户端的其他会话；需要独立环境时使用专用 profile 或单独的系统账号。不同电脑需各自配置 GitHub 凭据、目标仓库、工作目录与模型；安装插件不会自动复制这些配置或会话数据。
+
 Setup has many steps, so an agent does it with you. Ask your coding agent:
 
 > Read SETUP.md in this repository and set up dsh-superagent with me.
@@ -32,7 +42,7 @@ Read the numbered documents in order; each builds only on the ones before it.
 
 ## Development
 
-`pnpm check` runs the typecheck, the tests and the build.
+`pnpm check` runs the typecheck, the tests and the build. Commit the rebuilt `lib/` files with source changes so installing directly from Git remains usable.
 
 ## License
 

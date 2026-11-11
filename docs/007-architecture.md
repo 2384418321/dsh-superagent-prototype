@@ -315,6 +315,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/core/index.ts` | The core's exports |
 | `src/app/runtime.ts` | The Runtime, the composition root, with its start and stop |
 | `src/app/setup.ts` | Setup, and `setupChanged`, whether a save changes a field setup reads |
+| `src/app/startup-lock.ts` | Bounded retry when a state lock is briefly held during startup |
 | `src/app/passes.ts` | Passes, the pass scheduler |
 | `src/app/outbox.ts` | The Outbox: the Engine's `Outbox` port, the receipts and the `reply` effects that send them |
 | `src/app/notices.ts` | The main Session's notices and relays: `eventNotice`, `reportRelay`, `resultRelay` and `followupRelay` |
@@ -362,6 +363,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/registry.ts` | `SourceRegistry` |
 | `src/sources/host.ts` | `SourceHost`, `SourceContext`, `Health`, `health` and the fixed health texts |
 | `src/sources/poll.ts` | What GitHub and Feishu polling share: `POLL_HORIZON_MS`, `polled`, `cursorAt`, and `pollThreads`, which keeps a failure on its Thread as `pollError` |
+| `src/sources/sweep.ts` | The existing-Issue sweep: `sweepRound` proposes at most `maxPerRound` unassigned Issues with no pull request whose Thread no live Ticket follows, marks each emitted Trigger so a restart does not repeat it, and `sweepTrigger` builds a non-human Trigger that says it is a sweep |
 | `src/sources/github.ts` | The GitHub kind and plugin entry, exported as `./github-watch`: a poll round of notifications, the pull requests of open Tickets with their CI, and subscribed Threads |
 | `src/sources/github-trigger.ts` | GitHub comments, reviews, Issue bodies and CI changes as Triggers, and GitHub addresses |
 | `src/sources/github-pull.ts` | The pull request rules: which pull requests a Ticket follows (`claimPull`, `observePull`), the closes it reports to the Engine, and `pullEndNotices`, the chat notice of a Ticket that ended merged or closed |
@@ -410,6 +412,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
+| `tests/sweep.spec.ts` | The Issue sweep: duplicates, in-flight, done, has-PR, assigned, ceilings, and the trigger it builds |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |
 | `tests/background.spec.ts` | Waiting for a worker's shell jobs and subagents: an end that woke it, and a host that stops |
@@ -424,6 +427,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/delivery.spec.ts` | `AgentDelivery` |
 | `tests/retry-health.spec.ts`, `tests/role-models.spec.ts` | Model budget retries, and the models of the two roles |
 | `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP |
+| `tests/startup-entry.spec.ts` | Startup lock handling at the plugin entry |
+| `tests/startup-lock.spec.ts` | Startup lock retry and cancellation |
 | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
 | `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |

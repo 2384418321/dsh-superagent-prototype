@@ -1,6 +1,5 @@
 # dsh-superagent bundle layer: inserts the plugins without configuration, and the agent presets its Sessions run under. The
-# profile supplies the `dsh-superagent` entry's stateDir (see docs/006-deployment.md and examples/profile.cordis.patch.yml); the plugin
-# refuses to start without stateDir.
+# state directory defaults to ~/.dsh/state/dsh-superagent and can be overridden by the profile (see docs/006-deployment.md).
 - insert:
     - id: dsh-superagent
       name: dsh-superagent
@@ -120,7 +119,7 @@
               searchTimeoutMs: 60000
     # The agent preset of the main Session (ROUTER_PRESET in src/app/sessions.ts). The worker's 5-second shell and job waits, so a command or a wait does not hold back the next candidates, and
     # only what the main Session uses: no subagents, web, file search or writes, todo list, questions to a person, presenting,
-    # plan mode, plugin manager, scheduling, goals or workflows. No persona: the main Session's prompt is complete, so it has
+    # plan mode, plugin manager, goals or workflows. The one exception is the schedule tool: the main Session may schedule its own periodic wake-up for the Issue sweep (see src/sources/sweep.ts). No persona: the main Session's prompt is complete, so it has
     # no other section.
     - id: dsh-superagent-router-preset
       name: '@deepseek-ai/dsh-agent-preset'
@@ -170,6 +169,10 @@
             config:
               waitTimeoutMs: 5000
               maxWaitTimeoutMs: 5000
+          # The main Session may schedule its own periodic wake-up (see the Issue sweep): the host service
+          # `@deepseek-ai/dsh-schedule` is mounted by the profile, and only this preset exposes its tool.
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
           - id: skill-filesystem
             name: '@deepseek-ai/dsh-skill-filesystem'
           - id: tool-skill

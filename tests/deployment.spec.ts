@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -40,8 +40,8 @@ afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 vi.setConfig({ testTimeout: 30_000 })
 
 describe('configuration schema', () => {
-  it('requires only the state directory and reads the editable fields through references', () => {
-    expect(() => Config({})).toThrow('stateDir')
+  it('defaults the state directory, allows an override, and reads editable fields through references', () => {
+    expect(machineOf(Config({})).stateDir).toBe(join(homedir(), '.dsh', 'state', 'dsh-superagent'))
     const read = machineOf(Config({ stateDir: join(dir, 'state') }))
     // Limits are volatile references that the loader updates in place and callers read when used.
     expect({ ...read, promptMaxChars: read.promptMaxChars.get(), admissionContextMaxPages: read.admissionContextMaxPages.get(),
@@ -49,6 +49,7 @@ describe('configuration schema', () => {
       .toEqual({ stateDir: join(dir, 'state'), promptMaxChars: 100000, admissionContextMaxPages: 10, admissionContextTimeoutMs: 15000 })
     expect(() => Config(minimal({ stateDir: 'relative/dir' }))).toThrow()
     expect(() => Config(minimal({ stateDir: '~/dir' }))).toThrow()
+    expect(Config(minimal({ stateDir: 'C:\\dsh\\state' })).stateDir).toBe('C:\\dsh\\state')
   })
   it('names keys the configuration does not define, and where the values of older keys live now', () => {
     const raw = minimal({ repository: 'acme/widgets', repositoryPath: '/srv/widgets', blockedCommands: [], author: { name: 'Alice' }, extra: 1 })

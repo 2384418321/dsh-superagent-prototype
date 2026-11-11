@@ -12,6 +12,8 @@ import type { GithubComment, PullRef } from './github-trigger.ts'
 import { observePull, pullsOf, readPull, type Pull } from './github-pull.ts'
 import { health, sourceContext, type Health, type SourceContext } from './host.ts'
 import { KV } from '../kv.ts'
+import { SweepConfigSchema, SweepIssueSchema, sweepCandidates, sweepRound, type SweepIssue } from './sweep.ts'
+import { liveTicket } from '../core/index.ts'
 import { cursorAt, pause, POLL_HORIZON_MS, pollThreads as pollEach } from './poll.ts'
 import type { Localized, SourceKind } from './kind.ts'
 import { z } from 'zod'
@@ -25,7 +27,10 @@ const NotificationSchema = z.looseObject({
 const GithubConfigSchema = GithubAccountsSchema.extend({ pollSeconds: z.number().int().min(60).max(3600).default(60),
   failuresBeforeError: z.number().int().min(1).max(20).default(3),
   observeIssues: z.boolean().default(false), observePulls: z.boolean().default(false), observeComments: z.boolean().default(false),
-  observeCi: z.boolean().default(false) }).strict()
+  observeCi: z.boolean().default(false),
+  /** Existing-Issue sweep: labels to select, cadence, and ceilings (see sweep.ts). */
+  sweepLabel: z.string().regex(/^[A-Za-z0-9:_,.\- ]{0,180}$/).default(''), sweepIncludeAttention: z.boolean().default(false), sweepEverySeconds: z.number().int().min(300).max(86_400).default(900),
+  sweepMaxPerRound: z.number().int().min(1).max(5).default(1), sweepMaxOpenTickets: z.number().int().min(0).max(20).default(3) }).strict()
 export type GithubConfig = z.infer<typeof GithubConfigSchema>
 const OBSERVED = { issues: 'observeIssues', pulls: 'observePulls', comments: 'observeComments', ci: 'observeCi' } as const
 type Scope = keyof typeof OBSERVED
@@ -54,7 +59,16 @@ export const githubKind: SourceKind<GithubConfig> = {
     { key: 'observeComments', type: 'switch', label: { zh: '接收仓库里的评论', en: 'Receive comments in the repository' },
       hint: { zh: '打开后，Issue 和 PR 上没有 @ 智能体的评论和代码评论也会收到，由策略的接收表决定是否成为候选。', en: 'Comments and review comments on Issues and PRs that do not mention the agent are received too, and the Policy\'s admission table decides whether they become candidates.' } },
     { key: 'observeCi', type: 'switch', label: { zh: '接收默认分支的 CI', en: 'Receive the default branch\'s CI' },
-      hint: { zh: '打开后，默认分支的 CI 失败和恢复会收到，由策略的接收表决定是否成为候选。', en: 'Failures of the default branch\'s CI, and its recovery, are received, and the Policy\'s admission table decides whether they become candidates.' } }],
+      hint: { zh: '打开后，默认分支的 CI 失败和恢复会收到，由策略的接收表决定是否成为候选。', en: 'Failures of the default branch\'s CI, and its recovery, are received, and the Policy\'s admission table decides whether they become candidates.' } },
+    { key: 'sweepLabel', type: 'text', label: { zh: '存量 Issue 扫描的标签', en: 'Label of the Issue sweep' }, advanced: true,
+      pattern: '[A-Za-z0-9:_,.\\- ]{0,180}',
+      hint: { zh: '通常是 status:ready；多个标签用逗号分隔且须全部命中。留空表示不扫描。命中后仍过策略：智能体账号须在「评论可以成为候选的机器人」名单里，扫描结果才成为推断候选，否则按策略忽略；扫描永远不会产生明确请求。', en: 'Usually status:ready; comma-separated labels must all match. Empty disables sweeping. The Policy still gates it: the agent account must be on the bots list, otherwise the swept Issue is ignored; a sweep never makes an explicit request.' } },
+    { key: 'sweepIncludeAttention', type: 'switch', advanced: true, label: { zh: '纳入验收失败与未分类', en: 'Include failed acceptance and unclassified Issues' },
+      hint: { zh: '仅作为待评估候选，保留失败证据并先核历史；已认领、已有工单或开放 PR 仍按去重规则跳过。', en: 'Candidates for assessment only; assigned Issues, live Tickets and open PRs still follow deduplication rules.' } },
+    { key: 'sweepEverySeconds', type: 'number', advanced: true, min: 300, max: 86400, label: { zh: '扫描间隔 / 秒', en: 'Sweep interval / seconds' } },
+    { key: 'sweepMaxPerRound', type: 'number', advanced: true, min: 1, max: 5, label: { zh: '每轮最多提交几个候选', en: 'Candidates per sweep round' } },
+    { key: 'sweepMaxOpenTickets', type: 'number', advanced: true, min: 0, max: 20, label: { zh: '已有多少开放工单时停扫', en: 'Stop sweeping at this many open Tickets' },
+      hint: { zh: '0 表示不限。', en: '0 disables the ceiling.' } }],
   // What the Source observes across the repository it receives in full; elsewhere, only what addresses the agent.
   scope: ({ meta }, config) => {
     const row = scopeOf(meta)
@@ -141,6 +155,9 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
       const failed = pollFailure(failures, config?.failuresBeforeError ?? 1, error)
       if (!signal.aborted && failed) ctx.report('github', failed)
     }
+    // The sweep is independent of the poll cursors: a failure is reported but never moves a cursor.
+    try { await sweepIfDue(ctx, signal) }
+    catch (error) { if (!signal.aborted) ctx.report('github', health('error', 'pollFailures', { count: '1', error: String(error) })) }
     await pause(Math.max(interval, ctx.config<GithubConfig>(SOURCE)?.pollSeconds ?? 60) * 1000, signal)
   }
 }
@@ -456,4 +473,48 @@ async function pollThread(ctx: SourceContext, round: Round, thread: Thread): Pro
     await intakeComments(ctx, { number, isPr: true, url: pr.html_url, prAuthor: pr.user.login }, since, round)
   } else await intakeComments(ctx, { number, isPr: false }, since, round)
   ctx.state.set(checkpoint, cursorAt(round.started))
+}
+
+/**
+ * Runs the configured sweep when it is due. Every emitted candidate is remembered in KV, so a restart or a repeated poll never
+ * proposes the same Issue revision twice; an Issue with a live Ticket, an assignee or a pull request is skipped before emission.
+ */
+export async function sweepIfDue(ctx: SourceContext, signal: AbortSignal): Promise<void> {
+  const config = ctx.config<GithubConfig>(SOURCE)
+  if (!config) return
+  const labels = config.sweepLabel.split(',').map(label => label.trim()).filter(Boolean)
+  if (!config.observeIssues || !labels.length) return
+  const state = ctx.state.get(KV.github.sweep)
+  if (state && Date.now() - Date.parse(state.at) < config.sweepEverySeconds * 1000) return
+  const commands = ctx.commands.withSignal(signal)
+  const listed = config.sweepIncludeAttention
+    ? (await commands.gh<Record<string, unknown>[][]>(['api', `repos/${ctx.deployment.repository}/issues?state=open&per_page=100`, '--paginate', '--slurp']))
+      .flat().filter(item => !item.pull_request).map(item => ({ ...item, url: item.html_url, updatedAt: item.updated_at }))
+    : await commands.gh<unknown[]>(['issue', 'list', '-R', ctx.deployment.repository, '--state', 'open', '--label', labels[0]!,
+      '--json', 'number,title,url,updatedAt,body,labels,assignees', '--limit', '10000'])
+  const issues = sweepCandidates(listed.flatMap(raw => { const parsed = SweepIssueSchema.safeParse(raw); return parsed.success ? [parsed.data] : [] }),
+    labels, config.sweepIncludeAttention)
+  // A resolved dependency need not update the original Issue; recheck on a new default-branch commit or every six hours.
+  const commits = await commands.gh<unknown>(['api', `repos/${ctx.deployment.repository}/commits?per_page=1`])
+  const head = z.array(z.object({ sha: z.string().regex(/^[a-f0-9]{40}$/i) })).min(1).parse(commits)[0]!.sha
+  const contextRevision = `${head}:${Math.floor(Date.now() / (6 * 60 * 60 * 1000))}`
+  const inFlight = new Set(ctx.threads.subscribed(SOURCE).filter(thread => thread.subscriptions.some(id => {
+    const ticket = ctx.tickets.get(id); return !!ticket && liveTicket(ticket)
+  })).map(thread => thread.key))
+  for (const issue of issues) {
+    const thread = ctx.threads.get(`github:${issue.number}`)
+    if (thread && (thread.pending.length || thread.evaluating)) inFlight.add(thread.key)
+  }
+  const emitted = new Set(state?.emitted ?? [])
+  const outcome = await sweepRound({ labels, everySeconds: config.sweepEverySeconds, maxPerRound: config.sweepMaxPerRound,
+    maxOpenTickets: config.sweepMaxOpenTickets, skipWithOpenPull: true, skipAssigned: true }, {
+    list: async () => issues,
+    hasOpenPull: async number => (await commands.gh<{ number: number }[]>(['pr', 'list', '-R', ctx.deployment.repository,
+      '--state', 'open', '--search', `${number} in:body`, '--json', 'number', '--limit', '1'])).length > 0,
+    inFlight: () => inFlight, emitted: id => emitted.has(id), mark: id => { emitted.add(id) },
+    receive: trigger => ctx.receive(trigger), openTickets: ctx.tickets.open().length, contextRevision,
+    actor: ctx.deployment.github.login, repository: ctx.deployment.repository, now: () => new Date().toISOString(),
+  })
+  ctx.state.set(KV.github.sweep, { at: new Date().toISOString(), emitted: [...emitted].slice(-200) })
+  if (outcome.emitted) ctx.report('github', health('ready', 'sweepEmitted', { count: String(outcome.emitted) }))
 }
