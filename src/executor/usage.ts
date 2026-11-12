@@ -19,8 +19,11 @@ export function executorUsage(events: readonly SessionEvent[]): ExecutorUsage {
       || (usage.cacheReadTokens !== undefined && !count(usage.cacheReadTokens))
       || (usage.cacheWriteTokens !== undefined && !count(usage.cacheWriteTokens))) { complete = false; continue }
     const components = usage.inputTokens + usage.outputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0)
-    const amount = usage.totalTokens ?? components
-    if (!count(components) || !count(amount) || amount < components || !count(total + amount)) { complete = false; continue }
+    if (!count(components) || (usage.totalTokens !== undefined && !count(usage.totalTokens))) { complete = false; continue }
+    // The installed client counts the four disjoint counters; mismatches must not silently authorize a handoff.
+    if (components > 0 && usage.totalTokens !== undefined && usage.totalTokens !== components) complete = false
+    const amount = components || usage.totalTokens || 0
+    if (!count(amount) || !count(total + amount)) { complete = false; continue }
     total += amount
   }
   return { total, complete }

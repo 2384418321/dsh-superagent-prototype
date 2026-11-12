@@ -31,6 +31,11 @@ describe('executor lifetime usage', () => {
     expect(executorUsage(events(message(1, { ...usage, totalTokens: Number.MAX_SAFE_INTEGER + 1 })))).toEqual({ total: 0, complete: false })
   })
 
+  it('does not authorize a switch when the provider total disagrees with the client counter', () => {
+    const usage = { inputTokens: 10, outputTokens: 2, cacheReadTokens: 88, totalTokens: 101 }
+    expect(executorUsage(events(message(1, usage)))).toEqual({ total: 100, complete: false })
+  })
+
   it('requires a verified count strictly above 300 million', () => {
     expect(overExecutorLimit({ total: 300_000_000, complete: true })).toBe(false)
     expect(overExecutorLimit({ total: 300_000_001, complete: true })).toBe(true)
