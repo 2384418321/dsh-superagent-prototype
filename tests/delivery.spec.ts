@@ -30,7 +30,7 @@ function fixture(history: UserMessage[] = []) {
     inbox.nextStep.splice(0); inbox.nextTurn.splice(0)
     ctx.emit('session/event', agent.session, event(message))
   }
-  return { agent, agents, inbox, steer, followup, injected, open, read, close, flush, send, inject, holds, consume, signal, delivery }
+  return { ctx, agent, agents, inbox, steer, followup, injected, open, read, close, flush, send, inject, holds, consume, signal, delivery }
 }
 
 it.each(['queue', 'steer'] as const)('delivers %s as an orchestrator relay, deduplicating pending and consumed messages', async mode => {
@@ -168,4 +168,16 @@ it('aborts a pending consumption wait without consuming the candidate', async ()
   f.signal.abort()
   await expect(waiting).rejects.toThrow()
   expect(f.inbox.nextStep).toHaveLength(1)
+})
+
+it('detects consumption between the history check and event subscription', async () => {
+  const f = fixture()
+  await f.send('candidate')
+  const message = f.steer.mock.calls[0]![0]
+  const on = f.ctx.on.bind(f.ctx)
+  vi.spyOn(f.ctx, 'on').mockImplementationOnce(((...args: Parameters<typeof on>) => {
+    f.consume(message)
+    return on(...args)
+  }) as typeof f.ctx.on)
+  await expect(f.delivery.waitConsumed(f.agent, 'candidate', f.signal.signal)).resolves.toBeUndefined()
 })
