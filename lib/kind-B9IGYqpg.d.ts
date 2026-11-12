@@ -36,6 +36,7 @@ declare class Commands {
   api(path: string, ...flags: string[]): Promise<string>;
   /** Fetches all pages of a GitHub API list within the configured repository, skipping items that fail schema validation. */
   pages<T>(item: z.ZodType<T>, path: string, tally?: Tally): Promise<T[]>;
+  private githubRead;
   private path;
   /**
    * Runs the Feishu bot's `lark-cli` and returns the JSON `data` payload.
