@@ -163,12 +163,16 @@ it('lists an Eval past its deadline, and as dsh-superagent\'s own errors only pa
     deadline: '2026-01-01T00:02:00Z' }
   store.threads.save({ key: 'github:1', ref: { source: 'github', id: '1' }, createdAt: at, subscriptions: [], correlated: [], pending: [],
     evaluating, meta: {} })
+  expect(problems(host).some(item => item.kind === 'eval-overdue')).toBe(false)
+  store.threads.save({ ...store.threads.get('github:1')!, evaluating: { ...evaluating, delivered: evaluating.startedAt } })
   const error = (detail: string) => ({ state: 'error' as const, detail })
   const health = { relay: error('relay failing'), reply: error('reply failing'), feishu: error('socket closed'),
     history: error('read failed'),
     'sync:feishu': error('sync failed'), evals: error('unavailable'), launch: { state: 'ready' as const, detail: '' } }
   const found = problems(host, health)
   expect(found).toContainEqual({ kind: 'eval-overdue', thread: expect.objectContaining({ key: 'github:1', stage: 'evaluating' }) })
+  store.threads.save({ ...store.threads.get('github:1')!, evaluating: { ...evaluating, delivered: evaluating.startedAt, pausedAt: evaluating.startedAt } })
+  expect(problems(host).some(item => item.kind === 'eval-overdue')).toBe(false)
   // Effects are dsh-superagent's own; a Source shows its parts and its Policy sync, and the Evals are listed one by one.
   expect(found.filter(item => item.kind === 'runtime-error')).toEqual([{ kind: 'runtime-error', name: 'relay', detail: 'relay failing' },
     { kind: 'runtime-error', name: 'reply', detail: 'reply failing' }])

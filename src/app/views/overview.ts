@@ -56,7 +56,7 @@ export function overview(host: ViewHost, health: HealthMap, policyVersionValue: 
     ...Object.entries(health).filter(([name, item]) => item.state === 'error' && !sourceParts.has(name) && !name.startsWith('sync:')
       && name !== 'evals')
       .map(([name, item]) => ({ kind: 'runtime-error' as const, name, detail: item.detail })),
-    ...evaluating.filter(thread => thread.evaluating!.deadline < now)
+    ...evaluating.filter(thread => thread.evaluating!.delivered && !thread.evaluating!.pausedAt && thread.evaluating!.deadline < now)
       .map(thread => ({ kind: 'eval-overdue' as const, thread: threadSummary(view, thread) })),
     ...unjudged(store, since).map(({ thread, decision }) => ({ kind: 'eval-unavailable' as const, decisionId: decision.id,
       thread: threadSummary(view, thread), reason: decision.reason, triggerId: decision.triggerIds[0] ?? '' })),

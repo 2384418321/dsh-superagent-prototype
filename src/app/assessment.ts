@@ -52,14 +52,15 @@ export interface AssessorHost {
   readonly commands: Commands
   readonly deployment: Deployment
   /** Durable effect queue through which candidate assessments are delivered. */
-  readonly effects: Pick<Effects, 'enqueue' | 'handle'>
+  readonly effects: Pick<Effects, 'enqueue' | 'handle' | 'kick'>
   settings(): Settings
   /** Whether processing is paused, which holds candidate deliveries. */
   paused(): boolean
+  assessmentInProgress(): boolean
   /** Thread context reader for `trigger`'s Source, or `undefined` when the Source has none. */
   threadContext(trigger: Trigger): TriggerContext | undefined
-  /** Delivers a candidate card to the main Session once per request ID, resolving after the Session receives it. */
-  deliver(requestId: string, text: string): Promise<void>
+  /** Queues a candidate once and reports when the main Session consumes it. */
+  deliver(requestId: string, text: string, signal: AbortSignal, consumed: () => void, failed: (error: unknown) => void): Promise<void>
   candidateCard(candidate: Candidate): Promise<Record<string, unknown>>
 }
 
@@ -89,23 +90,41 @@ export type EvalRead = z.infer<typeof EvalReadSchema>
 export class MasterAssessor implements Assessor {
   /** Per-evaluation read caches and thread contexts, keyed by `evalId`. */
   private readonly evals = new Map<string, EvalReads>()
+  private readonly deliveries = new Map<string, AbortController>()
   private readonly controller = new AbortController()
   /** Registers the handler that relays each Eval's candidate card, which a link lookup may delay for seconds. */
   constructor(private readonly host: AssessorHost) {
-    // Start the evaluation deadline only after the main Session receives the candidate card, so a busy Session does not consume evaluation time.
+    // One candidate holds the assessment slot until decided, so another cannot expire while waiting behind it.
     host.effects.handle('assessment', async ({ triggerId }, evalId) => {
       const candidate = this.host.engine.candidate(triggerId)
       if (candidate?.evalId !== evalId) return
-      await this.host.deliver(`candidate:${evalId}`, JSON.stringify({ kind: 'candidate', ...await this.host.candidateCard(candidate) }))
-      this.host.engine.candidateDelivered(evalId)
-    }, { limit: () => host.paused() ? 0 : 4 })
+      const abort = new AbortController()
+      this.deliveries.set(evalId, abort)
+      try {
+        await this.host.deliver(`candidate:${evalId}`, JSON.stringify({ kind: 'candidate', ...await this.host.candidateCard(candidate) }),
+          AbortSignal.any([abort.signal, this.controller.signal]), () => this.host.engine.candidateDelivered(evalId), () => {
+            if (!abort.signal.aborted && !this.controller.signal.aborted) {
+              this.deliveries.delete(evalId)
+              this.host.effects.enqueue('assessment', evalId, { triggerId })
+            }
+          })
+      } catch (error) {
+        this.deliveries.delete(evalId)
+        if (!abort.signal.aborted) throw error
+      }
+    }, { limit: () => host.paused() || this.deliveries.size || host.assessmentInProgress() ? 0 : 1 })
   }
   /** Enqueues an `assessment` effect to deliver `candidate`'s card to the main Session. */
   request(candidate: Candidate): void { this.host.effects.enqueue('assessment', candidate.evalId, { triggerId: candidate.triggers[0]!.id }) }
   /** Whether `evalId` is still the active evaluation for `trigger`. */
   private live(evalId: string, trigger: Trigger): boolean { return this.host.engine.candidate(trigger.id)?.evalId === evalId }
   /** Drop an Eval's context and reads once it finishes; any running load for it discards its result. */
-  release(evalId: string): void { this.evals.delete(evalId) }
+  release(evalId: string): void {
+    this.evals.delete(evalId)
+    this.deliveries.get(evalId)?.abort()
+    this.deliveries.delete(evalId)
+    this.host.effects.kick()
+  }
   /** Resolve the active evaluation for a trigger; historical triggers have none, and explicit requests are routed instead. */
   private evalFor(triggerId: string): { candidate: Candidate; trigger: Trigger } {
     const candidate = this.host.engine.candidate(triggerId)

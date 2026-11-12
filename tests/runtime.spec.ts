@@ -393,6 +393,7 @@ it('stops a ticket on a person\'s instruction for good, and resumes an ended one
   await runtime.pump()
   expect(runtime.store.tickets.get(ticket.id)!.ended).toBeDefined()
   await expect(route({ kind: 'attach', ticket_id: ticket.id, trigger_id: guest.id })).rejects.toThrow('stopped')
+  await route({ kind: 'ignore', trigger_id: guest.id, reason: 'Stopped ticket remains stopped' })
   // A ticket that ended by itself resumes on a person's message on its thread, whoever sent it.
   const other = await acceptedTicket(feishu('20', '@bot 修另一个'))
   await runTool(other.sessionId, 'orchestrator_report', { state: 'dropped', summary: 'not reproduced' })
@@ -621,6 +622,17 @@ it('refuses an accept through orchestrator_route for inferred candidates so proa
   await receive(observed)
   await expect(route({ kind: 'accept', trigger_id: observed.id, title: 'x', worktree_name: 'copy-fix', acknowledgement: 'x' })).rejects.toThrow('explicit requests from allowed senders')
   expect(runtime.store.tickets.list()).toEqual([])
+})
+
+it('restores an undelivered candidate after a restart even when its enqueue effect already completed', async () => {
+  const trigger = feishu('31', '@bot 修复排队问题')
+  await receive(trigger)
+  const evaluation = runtime.store.threads.get(`feishu:${CHAT}:om_31`)!.evaluating!
+  expect(evaluation.delivered).toBeUndefined()
+  expect(runtime.effects.pending('assessment', evaluation.id)).toBe(false)
+  const next = await restart()
+  expect(next.effects.pending('assessment', evaluation.id)).toBe(true)
+  await next.ready
 })
 
 it('syncs a Source\'s list once its plugin loads after dsh-superagent started', async () => {
