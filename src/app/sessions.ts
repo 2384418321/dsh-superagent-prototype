@@ -158,14 +158,15 @@ export class Sessions {
     const result = await this.ctx.sessionController.resolveAgent(sessionId as SessionId)
     return !('error' in result) && await this.agentDelivery.holds(result.agent, key(requestId))
   }
-  /** Queue a candidate and report when the main Session actually takes it from its inbox. */
-  async promptConsumed(sessionId: string, requestId: string, text: string, signal: AbortSignal,
-    consumed: () => void, failed: (error: unknown) => void): Promise<void> {
+  /** Queue the same candidate, or one recovery notice if it was consumed without opening an assessment. */
+  async promptAssessment(sessionId: string, requestId: string, text: string, signal: AbortSignal, recovery?: boolean): Promise<void> {
     signal.throwIfAborted()
     const result = await this.ctx.sessionController.resolveAgent(sessionId as SessionId)
     if ('error' in result) throw result.error
-    await this.agentDelivery.send(result.agent, key(requestId), text, 'steer', signal)
-    void this.agentDelivery.waitConsumed(result.agent, key(requestId), signal).then(consumed).catch(failed)
+    let id = key(requestId)
+    // Reuse an unconsumed notice across boots; only a consumed notice needs a new recovery identity.
+    for (let n = 0; recovery && await this.agentDelivery.consumed(result.agent, id); n++) id = key(requestId, 'recovery', String(n))
+    await this.agentDelivery.send(result.agent, id, text, 'steer', signal)
   }
   /** Deliver a message once per request id: to the next turn, the current one, or `inject`ed with its label without waking the agent. */
   async prompt(sessionId: string, requestId: string, text: string, mode: 'queue' | 'steer' | { inject: string }, authorize?: () => void,

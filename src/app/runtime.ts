@@ -133,7 +133,7 @@ export class Runtime extends Service implements SourceHost {
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
         assessmentInProgress: () => store.threads.active().some(thread => !!thread.evaluating?.delivered),
-        deliver: (id, text, signal, consumed, failed) => sessions.promptConsumed(masterId, id, text, signal, consumed, failed),
+        deliver: (id, text, signal, recovery) => sessions.promptAssessment(masterId, id, text, signal, recovery),
         candidateCard: candidate => candidateCard(links, candidate) })
       const outbox = this.outbox = new Outbox({ store, effects, sources, commands, paused: () => this.paused() })
       const { assessor, executor } = this
@@ -155,12 +155,12 @@ export class Runtime extends Service implements SourceHost {
             for (const message of pullEndNotices(ended, request, setup.deployment.repository)) outbox.send(message)
           }
         } })
-      // A queued candidate may already have left the effect queue but still be waiting in the Session inbox.
+      // Recover unopened assessments once per boot, including notifications consumed before a restart.
       for (const thread of store.threads.active()) {
         const evaluation = thread.evaluating
-        if (!evaluation || evaluation.delivered || effects.pending('assessment', evaluation.id)) continue
+        if (!evaluation || evaluation.delivered) continue
         const candidate = evaluation.triggerIds[0] && engine.candidate(evaluation.triggerIds[0])
-        if (candidate) assessor.request(candidate)
+        if (candidate) assessor.request(candidate, true)
       }
       // Keep health aligned with the overview's unresolved evaluation failures.
       const evals = board.claim('evals', { state: 'ready', detail: 'No unavailable Eval in the last 24 hours' })

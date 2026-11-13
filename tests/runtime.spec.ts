@@ -635,6 +635,43 @@ it('restores an undelivered candidate after a restart even when its enqueue effe
   await next.ready
 })
 
+it('recovers a consumed but unopened assessment once, reuses a pending notice, and preserves a claimed deadline on restart', async () => {
+  const trigger = feishu('32', '这个文案好奇怪，改成“浏览网页”吧', { mentions: [] })
+  await receive(trigger)
+  const sessionId = runtime.masterId
+  const inbox = agents.get(sessionId)!.inbox
+  const message = inbox.nextStep.find(item => item.content.some(block => block.type === 'text' && block.text.includes('"kind":"candidate"')))!
+  expect(message).toBeDefined()
+  inbox.nextStep.splice(inbox.nextStep.indexOf(message), 1)
+  const persisted = [message]
+  const persistence = services.sessionPersistence as { open: ReturnType<typeof vi.fn> }
+  persistence.open.mockImplementation(async () => ({
+    read: async (offset: number) => ({ events: offset ? [] : persisted.map(data => ({ type: 'user/message', data })) }),
+    [Symbol.asyncDispose]: async () => {},
+  }))
+  const sent = () => relays(sessionId).filter(item => item.kind === 'candidate').length
+  const evaluation = runtime.store.threads.get(`feishu:${CHAT}:om_32`)!.evaluating!
+  expect(evaluation.delivered).toBeUndefined()
+  let next = await restart(); await next.ready; await next.idle()
+  expect(sent()).toBe(2)
+  expect(next.engine.candidate(trigger.id)?.evalId).toBe(evaluation.id)
+  expect(next.store.tickets.list()).toEqual([])
+  // A second boot with the recovery notice still pending must not queue a third copy.
+  next = await restart(); await next.ready; await next.idle()
+  expect(sent()).toBe(2)
+  // Once consumed without opening, a later boot can safely wake this same evaluation again.
+  persisted.push(inbox.nextStep.splice(0)[0]!)
+  next = await restart(); await next.ready; await next.idle()
+  expect(sent()).toBe(3)
+  await runTool(sessionId, 'orchestrator_eval', { trigger_id: trigger.id })
+  const opened = next.store.threads.get(`feishu:${CHAT}:om_32`)!.evaluating!
+  expect(opened.delivered).toBeDefined()
+  next = await restart(); await next.ready; await next.idle()
+  expect(sent()).toBe(3)
+  expect(next.store.threads.get(`feishu:${CHAT}:om_32`)!.evaluating!.deadline).toBe(opened.deadline)
+  expect(next.store.tickets.list()).toEqual([])
+})
+
 it('syncs a Source\'s list once its plugin loads after dsh-superagent started', async () => {
   const next = await restart()
   await next.ready

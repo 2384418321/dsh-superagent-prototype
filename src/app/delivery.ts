@@ -62,27 +62,9 @@ export class AgentDelivery {
     const id = messageId(requestId)
     return (await this.history(agent)).ids.has(id) || [...agent.inbox.nextTurn, ...agent.inbox.nextStep].some(message => deliveryId(message) === id)
   }
-  /** An inbox enqueue is not consumption: wait until the message enters the Session history. */
-  async waitConsumed(agent: Agent, requestId: string, signal: AbortSignal): Promise<void> {
-    signal.throwIfAborted()
-    const seen = await this.history(agent)
-    signal.throwIfAborted()
-    const id = messageId(requestId)
-    if (seen.ids.has(id)) return
-    await new Promise<void>((resolve, reject) => {
-      const finish = (error?: unknown) => {
-        dispose()
-        signal.removeEventListener('abort', abort)
-        if (error) reject(error); else resolve()
-      }
-      const abort = () => finish(signal.reason ?? new Error('Aborted'))
-      const dispose = this.ctx.on('session/event', (session, event) => {
-        if (session === agent.session && event.type === 'user/message' && deliveryId(event.data) === id) finish()
-      })
-      signal.addEventListener('abort', abort, { once: true })
-      if (signal.aborted) abort()
-      else if (seen.ids.has(id)) finish()
-    })
+  /** Whether this request entered Session history, rather than only waiting in an inbox. */
+  async consumed(agent: Agent, requestId: string): Promise<boolean> {
+    return (await this.history(agent)).ids.has(messageId(requestId))
   }
   /** Delivers once to the selected inbox, or injects into history without waking the agent, and flushes Session persistence before acknowledging the producer. */
   async send(agent: Agent, requestId: string, text: string, mode: 'queue' | 'steer' | { inject: string }, signal: AbortSignal, authorize?: () => void,

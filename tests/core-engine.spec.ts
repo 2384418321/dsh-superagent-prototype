@@ -158,13 +158,13 @@ describe('eval', () => {
     h.engine.evaluateDue()
     expect(h.requests.map(candidate => candidate.thread.key)).toEqual(['chat:A', 'chat:B'])
   })
-  it('counts an Eval\'s deadline from its delivery, queues its Triggers again twice when it expires, then records it unavailable', async () => {
+  it('counts an Eval\'s deadline from its first assessment read, queues its Triggers again twice when it expires, then records it unavailable', async () => {
     const h = harness()
     h.engine.receive(trigger('1')); h.pump()
-    // A candidate the assessor's Session has not taken does not expire.
+    // A notification without an explicit assessment read does not expire.
     h.tick(600); h.pump()
     expect(h.engine.candidate('1')?.evalId).toBe(h.requests[0]!.evalId)
-    const deliver = () => { h.engine.candidateDelivered(h.requests.at(-1)!.evalId) }
+    const deliver = () => { h.engine.candidateRead(h.requests.at(-1)!.evalId) }
     deliver()
     h.tick(59); h.pump()
     expect(h.requests).toHaveLength(1)
@@ -735,7 +735,7 @@ describe('pause', () => {
   it('lets no Eval expire while processing is paused, and moves its deadline on by the pause\'s length', () => {
     const h = harness()
     h.engine.receive(trigger('1')); h.pump()
-    h.engine.candidateDelivered(h.requests[0]!.evalId)
+    h.engine.candidateRead(h.requests[0]!.evalId)
     const deadline = Date.parse(h.repo.threads.get('chat:t1')!.evaluating!.deadline)
     h.tick(30); h.setPaused(true); h.pump()
     // Paused past the deadline, the Eval waits.
@@ -1297,13 +1297,13 @@ describe('gaps', () => {
     h.engine.stopTicket(stopped)
     expect(() => h.engine.reply({ purpose: 'result', ticketId: stopped, text: 'x' })).toThrow(new UserError('notReady'))
   })
-  it('keeps an Eval\'s deadline on a repeated delivery, refuses to queue a held Trigger again, and puts expired Triggers first', () => {
+  it('keeps an Eval\'s deadline on a repeated assessment read, refuses to queue a held Trigger again, and puts expired Triggers first', () => {
     const h = harness()
     h.engine.receive(trigger('1')); h.pump()
     const evalId = h.requests[0]!.evalId
-    h.engine.candidateDelivered(evalId)
+    h.engine.candidateRead(evalId)
     const deadline = h.repo.threads.get('chat:t1')!.evaluating!.deadline
-    h.tick(30); h.engine.candidateDelivered(evalId)
+    h.tick(30); h.engine.candidateRead(evalId)
     expect(h.repo.threads.get('chat:t1')!.evaluating!.deadline).toBe(deadline)
     expect(h.engine.reevaluate('1')).toBe(false)
     // A Trigger that arrives meanwhile queues behind the expired one, and the fresh Eval takes both in that order.

@@ -30,7 +30,7 @@ export class Evals extends EnginePart {
   /**
    * Expire a Thread's Eval past its deadline (see `expire`), unless processing is paused: then the Eval notes when the
    * processing pause began, and once processing resumes its deadline moves forward by the pause's length. An Eval whose
-   * candidate has not reached the assessor's Session does not expire.
+   * assessment has not been explicitly opened does not expire.
    */
   due(thread: Thread, policy: Policy): void {
     const evaluation = thread.evaluating
@@ -44,8 +44,8 @@ export class Evals extends EnginePart {
     else return
     this.repo.threads.save(thread)
   }
-  /** An Eval's candidate reached the assessor's Session: its deadline counts from now. */
-  delivered(evalId: string, policy: Policy): void {
+  /** The first explicit assessment read starts the deadline; subsequent reads do not renew it. */
+  readStarted(evalId: string, policy: Policy): void {
     const thread = this.repo.threads.active().find(item => item.evaluating?.id === evalId)
     if (!thread?.evaluating || thread.evaluating.delivered) return
     const now = this.now()
