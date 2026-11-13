@@ -199,6 +199,37 @@ it('reports failures as CliError with the code the CLI names and the exit status
   await expect(commands.lark(['im', '+messages-reply'])).rejects.toMatchObject({ message: 'message not found (231003)', code: 231003 })
 })
 
+it('retries transient GitHub 503 reads but never replays writes', async () => {
+  const commands = new Commands(() => deployment, {}, new AbortController().signal)
+  const unavailable = new CliError('gh: HTTP 503', 503, 1)
+  const run = vi.spyOn(commands, 'run').mockRejectedValueOnce(unavailable).mockResolvedValueOnce('[]')
+  await expect(commands.api('issues/1')).resolves.toBe('[]')
+  expect(run).toHaveBeenCalledTimes(2)
+  run.mockClear().mockRejectedValue(unavailable)
+  await expect(commands.api('issues/1/comments', '--method', 'POST', '-f', 'body=x')).rejects.toBe(unavailable)
+  expect(run).toHaveBeenCalledTimes(1)
+  run.mockClear()
+  await expect(commands.api('issues/1/comments', '-f', 'body=x')).rejects.toBe(unavailable)
+  expect(run).toHaveBeenCalledTimes(1)
+  run.mockClear()
+  await expect(commands.api('issues/1')).rejects.toBe(unavailable)
+  expect(run).toHaveBeenCalledTimes(3)
+  run.mockClear().mockRejectedValue(new CliError('gh: HTTP 404', 404, 1))
+  await expect(commands.api('issues/1')).rejects.toMatchObject({ code: 404 })
+  expect(run).toHaveBeenCalledTimes(1)
+})
+
+it('stops a GitHub 503 retry when its work is cancelled', async () => {
+  const controller = new AbortController()
+  const commands = new Commands(() => deployment, {}, controller.signal)
+  const run = vi.spyOn(commands, 'run').mockImplementation(async () => {
+    controller.abort()
+    throw new CliError('gh: HTTP 503', 503, 1)
+  })
+  await expect(commands.api('issues/1')).rejects.toMatchObject({ name: 'AbortError' })
+  expect(run).toHaveBeenCalledTimes(1)
+})
+
 it('stops a running command when the signal of its work aborts, or the lifetime, and leaves the other work running', async () => {
   const lifetime = new AbortController(), work = new AbortController()
   const commands = new Commands(() => deployment, {}, lifetime.signal)

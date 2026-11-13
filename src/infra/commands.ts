@@ -2,6 +2,7 @@
 import { execFile } from 'node:child_process'
 import { basename } from 'node:path'
 import { promisify } from 'node:util'
+import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
 import type { Deployment } from '../deployment.ts'
 
@@ -82,14 +83,24 @@ export class Commands {
   async api<T>(schema: z.ZodType<T>, path: string, ...flags: string[]): Promise<T>
   async api(path: string, ...flags: string[]): Promise<string>
   async api<T>(schema: z.ZodType<T> | string, ...rest: string[]): Promise<T | string> {
-    if (typeof schema === 'string') return this.run(this.deployment.github.cli, ['api', this.path(schema), ...rest])
+    if (typeof schema === 'string') return this.githubRead(() => this.run(this.deployment.github.cli, ['api', this.path(schema), ...rest]), rest)
     const [path = '', ...flags] = rest
-    return schema.parse(await this.gh(['api', this.path(path), ...flags]))
+    return schema.parse(await this.githubRead(() => this.gh(['api', this.path(path), ...flags]), flags))
   }
   /** Fetches all pages of a GitHub API list within the configured repository, skipping items that fail schema validation. */
   async pages<T>(item: z.ZodType<T>, path: string, tally?: Tally): Promise<T[]> {
-    const pages = z.array(z.array(z.unknown())).parse(await this.gh(['api', this.path(path), '--paginate', '--slurp']))
+    const pages = z.array(z.array(z.unknown())).parse(await this.githubRead(() => this.gh(['api', this.path(path), '--paginate', '--slurp']), []))
     return validItems(item, pages.flat(), tally)
+  }
+  private async githubRead<T>(read: () => Promise<T>, flags: string[]): Promise<T> {
+    const writable = flags.some(flag => /^(?:--method(?:=|$)|-X|--field(?:=|$)|--raw-field(?:=|$)|--input(?:=|$)|-[fF])/.test(flag))
+    for (let attempt = 0; ; attempt++) {
+      try { return await read() }
+      catch (error) {
+        if (writable || !(error instanceof CliError) || error.code !== 503 || attempt >= 2) throw error
+        await delay((attempt + 1) * 1000, undefined, { signal: this.signal })
+      }
+    }
   }
   private path(path: string): string {
     const outside = /^\/|^[a-z]+:|(^|\/)\.\.?(\/|\?|$)/i.test(path)

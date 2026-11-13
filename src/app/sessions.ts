@@ -158,6 +158,15 @@ export class Sessions {
     const result = await this.ctx.sessionController.resolveAgent(sessionId as SessionId)
     return !('error' in result) && await this.agentDelivery.holds(result.agent, key(requestId))
   }
+  /** Queue a candidate and report when the main Session actually takes it from its inbox. */
+  async promptConsumed(sessionId: string, requestId: string, text: string, signal: AbortSignal,
+    consumed: () => void, failed: (error: unknown) => void): Promise<void> {
+    signal.throwIfAborted()
+    const result = await this.ctx.sessionController.resolveAgent(sessionId as SessionId)
+    if ('error' in result) throw result.error
+    await this.agentDelivery.send(result.agent, key(requestId), text, 'steer', signal)
+    void this.agentDelivery.waitConsumed(result.agent, key(requestId), signal).then(consumed).catch(failed)
+  }
   /** Deliver a message once per request id: to the next turn, the current one, or `inject`ed with its label without waking the agent. */
   async prompt(sessionId: string, requestId: string, text: string, mode: 'queue' | 'steer' | { inject: string }, authorize?: () => void,
     accepted?: () => void): Promise<void> {

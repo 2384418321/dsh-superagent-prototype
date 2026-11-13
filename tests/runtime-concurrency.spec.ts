@@ -41,11 +41,14 @@ it('evaluates a message that arrives on a thread while an earlier candidate\'s c
   gate.resolve(); await h.runtime.idle()
   const threadB = `feishu:${CHAT}:om_2`
   expect(h.runtime.store.threads.get(threadB)).toMatchObject({ evaluating: { triggerIds: [b1.id] }, pending: [b2.id] })
+  expect(h.candidates()).toEqual([a1.id])
+  await h.route({ kind: 'ignore', trigger_id: a1.id, reason: 'first decision' })
+  await h.runtime.idle()
   await h.route({ kind: 'ignore', trigger_id: b1.id, reason: 'duplicate' })
   await h.runtime.idle()
   expect(h.runtime.store.threads.get(threadB)).toMatchObject({ evaluating: { triggerIds: [b2.id] }, pending: [] })
-  // A slow link lookup holds only its own candidate's card.
-  expect(h.candidates()).toEqual([b1.id, a1.id, b2.id])
+  // Candidates reach the main Session in order, once each earlier one is decided.
+  expect(h.candidates()).toEqual([a1.id, b1.id, b2.id])
 })
 
 it('delivers nothing to a ticket a person stopped while an earlier ticket\'s delivery waited', async () => {
@@ -91,6 +94,7 @@ it('runs prepare commands in the background, side by side, while accepts, intake
   for (const trigger of first) h.runtime.receive(trigger)
   await h.runtime.idle()
   for (const [index, trigger] of first.entries()) {
+    await waitUntil(() => h.candidates().includes(trigger.id))
     const accepted = await h.route({ kind: 'accept', trigger_id: trigger.id, title: 'fix', worktree_name: `fix-${index}`, acknowledgement: '收到。' })
     expect(accepted).toMatchObject({ decision: 'accept', ticket: { state: 'working/queued' } })
   }

@@ -39,7 +39,8 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
   const host: AssessorHost = {
     get engine() { return engine }, commands, deployment: testDeployment(), settings: () => SettingsSchema.parse({}),
     threadContext: threadContext ?? (trigger => sources.threadContext(trigger)),
-    effects: { enqueue: () => {}, handle: () => {} }, paused: () => false, deliver: async () => {}, candidateCard: async candidate => ({ eval_id: candidate.evalId }),
+    effects: { enqueue: () => {}, handle: () => {}, kick: () => {} }, paused: () => false, assessmentInProgress: () => false,
+    deliver: async () => {}, candidateCard: async candidate => ({ eval_id: candidate.evalId }),
   }
   const assessor = new MasterAssessor(host)
   const policy: Policy = { version: 'v1', paused: false, evalTimeoutMs: 600_000, gate: () => ({ admissible: true, strength, basis: { via: 'followup' } }),
@@ -62,6 +63,38 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
 const issue = (n: number): Trigger => ({ id: `issue-${n}`, source: 'github', threads: [{ source: 'github', id: String(n) }], actor: { source: 'github', id: 'bob' }, human: true,
   at: new Date(Date.UTC(2026, 8, 9, 0, 0, n)).toISOString(), text: `issue ${n}`, url: `https://github.com/acme/widgets/issues/${n}`, meta: { number: n } })
 const signal = new AbortController().signal
+
+it('holds the next candidate until the consumed assessment ends', async () => {
+  const consumed = deferred(), handler = vi.fn(), kick = vi.fn()
+  const candidate = { evalId: 'eval-a', triggers: [{ id: 'trigger-a' }] }
+  let active = true
+  let inProgress = false
+  const delivered = vi.fn(() => { inProgress = true })
+  const host = {
+    engine: { candidate: () => active ? candidate : undefined, candidateDelivered: delivered },
+    effects: { enqueue: vi.fn(), handle: handler, kick }, paused: () => false, assessmentInProgress: () => inProgress,
+    deliver: async (_id: string, _text: string, _signal: AbortSignal, onConsumed: () => void) => {
+      void consumed.promise.then(onConsumed)
+    }, candidateCard: async () => ({}),
+  } as unknown as AssessorHost
+  const assessor = new MasterAssessor(host)
+  const [kind, run, options] = handler.mock.calls[0]!
+  expect(kind).toBe('assessment')
+  expect(options.limit()).toBe(1)
+  const attempt = run({ triggerId: 'trigger-a' }, 'eval-a')
+  await attempt
+  expect(delivered).not.toHaveBeenCalled()
+  expect(options.limit()).toBe(0)
+  consumed.resolve()
+  await Promise.resolve()
+  expect(delivered).toHaveBeenCalledWith('eval-a')
+  expect(options.limit()).toBe(0)
+  active = false
+  inProgress = false
+  assessor.release('eval-a')
+  expect(kick).toHaveBeenCalled()
+  expect(options.limit()).toBe(1)
+})
 
 it('keeps nothing for an Eval once it is decided, as for one that timed out', async () => {
   const s = setup()

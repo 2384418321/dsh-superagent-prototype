@@ -393,6 +393,7 @@ it('stops a ticket on a person\'s instruction for good, and resumes an ended one
   await runtime.pump()
   expect(runtime.store.tickets.get(ticket.id)!.ended).toBeDefined()
   await expect(route({ kind: 'attach', ticket_id: ticket.id, trigger_id: guest.id })).rejects.toThrow('stopped')
+  await route({ kind: 'ignore', trigger_id: guest.id, reason: 'Stopped ticket remains stopped' })
   // A ticket that ended by itself resumes on a person's message on its thread, whoever sent it.
   const other = await acceptedTicket(feishu('20', '@bot 修另一个'))
   await runTool(other.sessionId, 'orchestrator_report', { state: 'dropped', summary: 'not reproduced' })
@@ -623,6 +624,17 @@ it('refuses an accept through orchestrator_route for inferred candidates so proa
   expect(runtime.store.tickets.list()).toEqual([])
 })
 
+it('restores an undelivered candidate after a restart even when its enqueue effect already completed', async () => {
+  const trigger = feishu('31', '@bot 修复排队问题')
+  await receive(trigger)
+  const evaluation = runtime.store.threads.get(`feishu:${CHAT}:om_31`)!.evaluating!
+  expect(evaluation.delivered).toBeUndefined()
+  expect(runtime.effects.pending('assessment', evaluation.id)).toBe(false)
+  const next = await restart()
+  expect(next.effects.pending('assessment', evaluation.id)).toBe(true)
+  await next.ready
+})
+
 it('syncs a Source\'s list once its plugin loads after dsh-superagent started', async () => {
   const next = await restart()
   await next.ready
@@ -695,9 +707,10 @@ it('retries only a failed, blocked or undelivered ticket with a new assignment, 
   runtime.store.decisions.save({ ...accepted, id: 'unavailable-1', kind: 'unavailable', reason: [{ code: 'timeout' }], at: new Date().toISOString() })
   const unjudged = () => overviewOf(runtime).problems.filter(problem => problem.kind === 'eval-unavailable')
   expect(unjudged()).toEqual([expect.objectContaining({ thread: expect.objectContaining({ key: accepted.threadKey }), reason: [{ code: 'timeout' }], triggerId: accepted.triggerIds[0] })])
-  // Health shows it as an error for an hour, which `status` reports, and not as a runtime error on the overview.
+  // Health uses the overview's 24-hour window instead of hiding an unresolved visible failure after one hour.
   expect(evalsHealth(runtime.store)).toMatchObject({ state: 'error', detail: expect.stringContaining('Assessment timed out') })
-  expect(evalsHealth(runtime.store, Date.now() + 3_700_000)).toMatchObject({ state: 'ready' })
+  expect(evalsHealth(runtime.store, Date.now() + 3_700_000)).toMatchObject({ state: 'error' })
+  expect(evalsHealth(runtime.store, Date.now() + 86_500_000)).toMatchObject({ state: 'ready' })
   await runtime.pump()
   expect(runtime.health.evals).toMatchObject({ state: 'error' })
   expect(overviewOf(runtime).problems.filter(problem => problem.kind === 'runtime-error')).toEqual([])

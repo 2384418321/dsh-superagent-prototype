@@ -599,6 +599,22 @@ describe('github source', () => {
     expect(h.store.threads.get('github:12')!.meta).not.toHaveProperty('pollError')
     h.store.close()
   })
+  it('retries a transient 503 while polling a subscribed thread without losing its comment', async () => {
+    const h = host()
+    h.store.threads.save({ key: 'github:7', ref: { source: 'github', id: '7' }, createdAt: '2026-09-01T00:00:00Z',
+      lastAt: new Date().toISOString(), subscriptions: ['t'], correlated: [], pending: [],
+      meta: { number: 7, isPr: false, title: 'Issue' } })
+    let attempts = 0
+    const reads = github(h, { 'issues/7/comments': () => ++attempts === 1 ? refused(503, 'Service Unavailable') : [
+      { id: 3, body: 'still broken', user: { login: 'b', type: 'User' }, created_at: '2026-09-02T00:00:00Z' },
+    ] })
+    await pollGithubThreads(h)
+    expect(bare(reads).filter(path => path === 'issues/7/comments')).toHaveLength(2)
+    expect(h.receive).toHaveBeenCalledTimes(1)
+    expect(h.store.get('github-cursor:7')).toBeDefined()
+    expect(h.store.threads.get('github:7')!.meta).not.toHaveProperty('pollError')
+    h.store.close()
+  })
   it('drops an Issue GitHub reports as deleted after recording it, and reads one it answers 404 for again', async () => {
     const h = host()
     h.store.set('github-since', '2026-09-08T00:00:00.000Z')

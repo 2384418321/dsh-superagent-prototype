@@ -132,7 +132,9 @@ export class Runtime extends Service implements SourceHost {
         repliedTo: trigger => repliedTo({ store, sources }, trigger) })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
-        deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate) })
+        assessmentInProgress: () => store.threads.active().some(thread => !!thread.evaluating?.delivered),
+        deliver: (id, text, signal, consumed, failed) => sessions.promptConsumed(masterId, id, text, signal, consumed, failed),
+        candidateCard: candidate => candidateCard(links, candidate) })
       const outbox = this.outbox = new Outbox({ store, effects, sources, commands, paused: () => this.paused() })
       const { assessor, executor } = this
       const policy = () => settingsPolicy(store.settings(), sources)
@@ -153,8 +155,15 @@ export class Runtime extends Service implements SourceHost {
             for (const message of pullEndNotices(ended, request, setup.deployment.repository)) outbox.send(message)
           }
         } })
-      // Update the `evals` health entry on every pass if an evaluation failed as unavailable within the last hour.
-      const evals = board.claim('evals', { state: 'ready', detail: 'No unavailable Eval in the last hour' })
+      // A queued candidate may already have left the effect queue but still be waiting in the Session inbox.
+      for (const thread of store.threads.active()) {
+        const evaluation = thread.evaluating
+        if (!evaluation || evaluation.delivered || effects.pending('assessment', evaluation.id)) continue
+        const candidate = evaluation.triggerIds[0] && engine.candidate(evaluation.triggerIds[0])
+        if (candidate) assessor.request(candidate)
+      }
+      // Keep health aligned with the overview's unresolved evaluation failures.
+      const evals = board.claim('evals', { state: 'ready', detail: 'No unavailable Eval in the last 24 hours' })
       const evaluateDue = () => { engine.evaluateDue(); evals.set(evalsHealth(store)) }
       const passes = this.passes = new Passes({ engine: { receive: trigger => engine.receive(trigger), evaluateDue }, effects,
         health: this.runtimeHealth, lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing() })
