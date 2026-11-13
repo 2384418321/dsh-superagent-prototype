@@ -707,9 +707,10 @@ it('retries only a failed, blocked or undelivered ticket with a new assignment, 
   runtime.store.decisions.save({ ...accepted, id: 'unavailable-1', kind: 'unavailable', reason: [{ code: 'timeout' }], at: new Date().toISOString() })
   const unjudged = () => overviewOf(runtime).problems.filter(problem => problem.kind === 'eval-unavailable')
   expect(unjudged()).toEqual([expect.objectContaining({ thread: expect.objectContaining({ key: accepted.threadKey }), reason: [{ code: 'timeout' }], triggerId: accepted.triggerIds[0] })])
-  // Health shows it as an error for an hour, which `status` reports, and not as a runtime error on the overview.
+  // Health uses the overview's 24-hour window instead of hiding an unresolved visible failure after one hour.
   expect(evalsHealth(runtime.store)).toMatchObject({ state: 'error', detail: expect.stringContaining('Assessment timed out') })
-  expect(evalsHealth(runtime.store, Date.now() + 3_700_000)).toMatchObject({ state: 'ready' })
+  expect(evalsHealth(runtime.store, Date.now() + 3_700_000)).toMatchObject({ state: 'error' })
+  expect(evalsHealth(runtime.store, Date.now() + 86_500_000)).toMatchObject({ state: 'ready' })
   await runtime.pump()
   expect(runtime.health.evals).toMatchObject({ state: 'error' })
   expect(overviewOf(runtime).problems.filter(problem => problem.kind === 'runtime-error')).toEqual([])

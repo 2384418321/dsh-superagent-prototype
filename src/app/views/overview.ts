@@ -22,13 +22,13 @@ function unjudged(store: Store, since: string): { thread: Thread; decision: Deci
     return [{ thread, decision }]
   })
 }
-/** Reports error health when any thread has an undismissed `unavailable` eval from the last hour without a newer decision or active eval. */
+/** Reports unresolved evaluation failures over the same 24-hour window as the overview. */
 export function evalsHealth(store: Store, now = Date.now()): Health {
-  const since = new Date(now - 3_600_000).toISOString()
+  const since = new Date(now - 24 * 3_600_000).toISOString()
   const open = unjudged(store, since)
-  if (!open.length) return { state: 'ready', detail: 'No unavailable Eval in the last hour' }
+  if (!open.length) return { state: 'ready', detail: 'No unavailable Eval in the last 24 hours' }
   const latest = open[0]!.decision
-  return { state: 'error', at: latest.at, detail: `${open.length} Eval(s) unavailable in the last hour without a later judgement; `
+  return { state: 'error', at: latest.at, detail: `${open.length} Eval(s) unavailable in the last 24 hours without a later judgement; `
     + `the latest on ${latest.threadKey}: ${reasonText(latest.reason)}` }
 }
 /**

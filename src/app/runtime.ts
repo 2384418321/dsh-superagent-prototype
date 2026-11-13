@@ -162,8 +162,8 @@ export class Runtime extends Service implements SourceHost {
         const candidate = evaluation.triggerIds[0] && engine.candidate(evaluation.triggerIds[0])
         if (candidate) assessor.request(candidate)
       }
-      // Update the `evals` health entry on every pass if an evaluation failed as unavailable within the last hour.
-      const evals = board.claim('evals', { state: 'ready', detail: 'No unavailable Eval in the last hour' })
+      // Keep health aligned with the overview's unresolved evaluation failures.
+      const evals = board.claim('evals', { state: 'ready', detail: 'No unavailable Eval in the last 24 hours' })
       const evaluateDue = () => { engine.evaluateDue(); evals.set(evalsHealth(store)) }
       const passes = this.passes = new Passes({ engine: { receive: trigger => engine.receive(trigger), evaluateDue }, effects,
         health: this.runtimeHealth, lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing() })
