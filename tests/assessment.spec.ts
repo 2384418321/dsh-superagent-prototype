@@ -64,18 +64,16 @@ const issue = (n: number): Trigger => ({ id: `issue-${n}`, source: 'github', thr
   at: new Date(Date.UTC(2026, 8, 9, 0, 0, n)).toISOString(), text: `issue ${n}`, url: `https://github.com/acme/widgets/issues/${n}`, meta: { number: n } })
 const signal = new AbortController().signal
 
-it('holds the next candidate until the consumed assessment ends', async () => {
-  const consumed = deferred(), handler = vi.fn(), kick = vi.fn()
+it('holds the next candidate without starting its clock until the assessment ends', async () => {
+  const handler = vi.fn(), kick = vi.fn()
   const candidate = { evalId: 'eval-a', triggers: [{ id: 'trigger-a' }] }
   let active = true
   let inProgress = false
   const delivered = vi.fn(() => { inProgress = true })
   const host = {
-    engine: { candidate: () => active ? candidate : undefined, candidateDelivered: delivered },
+    engine: { candidate: () => active ? candidate : undefined, candidateRead: delivered },
     effects: { enqueue: vi.fn(), handle: handler, kick }, paused: () => false, assessmentInProgress: () => inProgress,
-    deliver: async (_id: string, _text: string, _signal: AbortSignal, onConsumed: () => void) => {
-      void consumed.promise.then(onConsumed)
-    }, candidateCard: async () => ({}),
+    deliver: async () => {}, candidateCard: async () => ({}),
   } as unknown as AssessorHost
   const assessor = new MasterAssessor(host)
   const [kind, run, options] = handler.mock.calls[0]!
@@ -85,15 +83,26 @@ it('holds the next candidate until the consumed assessment ends', async () => {
   await attempt
   expect(delivered).not.toHaveBeenCalled()
   expect(options.limit()).toBe(0)
-  consumed.resolve()
-  await Promise.resolve()
-  expect(delivered).toHaveBeenCalledWith('eval-a')
-  expect(options.limit()).toBe(0)
   active = false
   inProgress = false
   assessor.release('eval-a')
   expect(kick).toHaveBeenCalled()
   expect(options.limit()).toBe(1)
+})
+
+it('starts the deadline on the first explicit assessment read, without renewing it on later reads', async () => {
+  const s = setup()
+  s.engine.receive(issue(1)); s.engine.evaluateDue()
+  const thread = s.repo.threads.get('github:1')!
+  s.repo.threads.save({ ...thread, evaluating: { ...thread.evaluating!, deadline: '2000-01-01T00:00:00.000Z' } })
+  s.engine.evaluateDue()
+  expect(s.engine.candidate('issue-1')?.evalId).toBe(thread.evaluating!.id)
+  await s.assessor.context('issue-1', signal)
+  const opened = s.repo.threads.get('github:1')!.evaluating!
+  expect(opened.delivered).toBeDefined()
+  expect(Date.parse(opened.deadline) - Date.parse(opened.delivered!)).toBe(600_000)
+  await s.assessor.context('issue-1', signal)
+  expect(s.repo.threads.get('github:1')!.evaluating!.deadline).toBe(opened.deadline)
 })
 
 it('keeps nothing for an Eval once it is decided, as for one that timed out', async () => {

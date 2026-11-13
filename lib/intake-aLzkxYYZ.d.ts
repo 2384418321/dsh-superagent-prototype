@@ -247,9 +247,9 @@ interface Evaluation {
   basis: MandateBasis;
   policyVersion: string;
   startedAt: string;
-  /** Timestamp when the candidate reached the assessor's Session; it cannot expire before, and its deadline counts from then. */
+  /** First explicit assessment read; retained as `delivered` for stored-state compatibility. Inbox consumption does not start the clock. */
   delivered?: string;
-  /** Expiration timestamp, counted from delivery (or from start until delivered); a processing pause shifts it forward by the pause duration. */
+  /** Expiration timestamp, active only after the first assessment read; a processing pause shifts it forward by the pause duration. */
   deadline: string;
   /** Timestamp when processing pause began; resuming shifts `deadline` forward by the pause duration; cleared on resume. */
   pausedAt?: string;

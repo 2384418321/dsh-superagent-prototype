@@ -48,7 +48,7 @@ const NO_CONTEXT = 'This Source gives no Thread context; assess the Trigger\'s o
 /** Host dependencies used by `MasterAssessor`. */
 export interface AssessorHost {
   /** Active evaluations in `Engine` that the assessor reads and decides. */
-  readonly engine: Pick<EngineForMainSession, 'candidate' | 'candidateDelivered' | 'decide'>
+  readonly engine: Pick<EngineForMainSession, 'candidate' | 'candidateRead' | 'decide'>
   readonly commands: Commands
   readonly deployment: Deployment
   /** Durable effect queue through which candidate assessments are delivered. */
@@ -59,8 +59,8 @@ export interface AssessorHost {
   assessmentInProgress(): boolean
   /** Thread context reader for `trigger`'s Source, or `undefined` when the Source has none. */
   threadContext(trigger: Trigger): TriggerContext | undefined
-  /** Queues a candidate once and reports when the main Session consumes it. */
-  deliver(requestId: string, text: string, signal: AbortSignal, consumed: () => void, failed: (error: unknown) => void): Promise<void>
+  /** Queues a candidate once; recovery wakes a consumed but unopened candidate after a host restart. */
+  deliver(requestId: string, text: string, signal: AbortSignal, recovery?: boolean): Promise<void>
   candidateCard(candidate: Candidate): Promise<Record<string, unknown>>
 }
 
@@ -95,19 +95,14 @@ export class MasterAssessor implements Assessor {
   /** Registers the handler that relays each Eval's candidate card, which a link lookup may delay for seconds. */
   constructor(private readonly host: AssessorHost) {
     // One candidate holds the assessment slot until decided, so another cannot expire while waiting behind it.
-    host.effects.handle('assessment', async ({ triggerId }, evalId) => {
+    host.effects.handle('assessment', async ({ triggerId, recovery }, evalId) => {
       const candidate = this.host.engine.candidate(triggerId)
       if (candidate?.evalId !== evalId) return
       const abort = new AbortController()
       this.deliveries.set(evalId, abort)
       try {
         await this.host.deliver(`candidate:${evalId}`, JSON.stringify({ kind: 'candidate', ...await this.host.candidateCard(candidate) }),
-          AbortSignal.any([abort.signal, this.controller.signal]), () => this.host.engine.candidateDelivered(evalId), () => {
-            if (!abort.signal.aborted && !this.controller.signal.aborted) {
-              this.deliveries.delete(evalId)
-              this.host.effects.enqueue('assessment', evalId, { triggerId })
-            }
-          })
+          AbortSignal.any([abort.signal, this.controller.signal]), recovery)
       } catch (error) {
         this.deliveries.delete(evalId)
         if (!abort.signal.aborted) throw error
@@ -115,7 +110,7 @@ export class MasterAssessor implements Assessor {
     }, { limit: () => host.paused() || this.deliveries.size || host.assessmentInProgress() ? 0 : 1 })
   }
   /** Enqueues an `assessment` effect to deliver `candidate`'s card to the main Session. */
-  request(candidate: Candidate): void { this.host.effects.enqueue('assessment', candidate.evalId, { triggerId: candidate.triggers[0]!.id }) }
+  request(candidate: Candidate, recovery?: boolean): void { this.host.effects.enqueue('assessment', candidate.evalId, { triggerId: candidate.triggers[0]!.id, ...(recovery ? { recovery } : {}) }) }
   /** Whether `evalId` is still the active evaluation for `trigger`. */
   private live(evalId: string, trigger: Trigger): boolean { return this.host.engine.candidate(trigger.id)?.evalId === evalId }
   /** Drop an Eval's context and reads once it finishes; any running load for it discards its result. */
@@ -158,6 +153,7 @@ export class MasterAssessor implements Assessor {
   private async seed(evalId: string, trigger: Trigger, caller?: AbortSignal): Promise<void> {
     caller?.throwIfAborted()
     const reads = this.reads(evalId, trigger)
+    this.host.engine.candidateRead(evalId)
     if (reads.context || reads.error !== undefined) return
     const thread = this.host.threadContext(trigger)
     if (!thread) { reads.error = NO_CONTEXT; return }

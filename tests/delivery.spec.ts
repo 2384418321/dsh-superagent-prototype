@@ -145,39 +145,15 @@ it('tells whether the Session holds a message: one waiting in its inbox, one it 
   expect([await restored.holds('request'), await restored.holds('other')]).toEqual([true, false])
 })
 
-it('waits for a candidate to be consumed, and recognizes consumed history after restart', async () => {
+it('distinguishes pending notifications from consumed and restored history', async () => {
   const f = fixture()
+  expect(await f.delivery.consumed(f.agent, 'candidate')).toBe(false)
   await f.send('candidate')
-  let consumed = false
-  const waiting = f.delivery.waitConsumed(f.agent, 'candidate', f.signal.signal).then(() => { consumed = true })
-  await Promise.resolve()
-  expect(consumed).toBe(false)
+  expect(await f.delivery.consumed(f.agent, 'candidate')).toBe(false)
   const message = f.steer.mock.calls[0]![0]
   f.consume(message)
-  await waiting
-  expect(consumed).toBe(true)
+  expect(await f.delivery.consumed(f.agent, 'candidate')).toBe(true)
   const restored = fixture([message])
-  await expect(restored.delivery.waitConsumed(restored.agent, 'candidate', restored.signal.signal)).resolves.toBeUndefined()
-})
-
-it('aborts a pending consumption wait without consuming the candidate', async () => {
-  const f = fixture()
-  await f.send('candidate')
-  const waiting = f.delivery.waitConsumed(f.agent, 'candidate', f.signal.signal)
-  await Promise.resolve()
-  f.signal.abort()
-  await expect(waiting).rejects.toThrow()
-  expect(f.inbox.nextStep).toHaveLength(1)
-})
-
-it('detects consumption between the history check and event subscription', async () => {
-  const f = fixture()
-  await f.send('candidate')
-  const message = f.steer.mock.calls[0]![0]
-  const on = f.ctx.on.bind(f.ctx)
-  vi.spyOn(f.ctx, 'on').mockImplementationOnce(((...args: Parameters<typeof on>) => {
-    f.consume(message)
-    return on(...args)
-  }) as typeof f.ctx.on)
-  await expect(f.delivery.waitConsumed(f.agent, 'candidate', f.signal.signal)).resolves.toBeUndefined()
+  expect(await restored.delivery.consumed(restored.agent, 'candidate')).toBe(true)
+  expect(await restored.delivery.consumed(restored.agent, 'other')).toBe(false)
 })
