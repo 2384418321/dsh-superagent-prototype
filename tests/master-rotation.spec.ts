@@ -243,3 +243,51 @@ it('keeps queued effects and records a new main session for restart', async () =
   expect(h.runtime.store.get(KV.runtime.masterId)).toBe(response.body.masterId)
   expect(h.runtime.effects.pending('relay', 'rotation-test')).toBe(true)
 })
+
+it('rotates with the current host descendant API without listChildren', async () => {
+  await h.runtime.idle()
+  const old = h.runtime.masterId
+  h.agents.get(old)!.status = 'idle'
+  const listDescendants = vi.fn(async () => [])
+  Object.assign(h.subagents.service, { listChildren: undefined, listDescendants })
+  const response = await h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue.', manageProcessing: true })
+  expect(response.status).toBe(200)
+  expect(listDescendants).toHaveBeenCalledWith(old)
+})
+
+it.each([
+  { kind: 'child', id: 'external-child', activity: 'running' },
+  { kind: 'diagnostic', id: 'unreadable-child', reason: 'unavailable' },
+])('refuses rotation when the current host reports unresolved descendant work: %j', async row => {
+  await h.runtime.idle()
+  const old = h.runtime.masterId
+  h.agents.get(old)!.status = 'idle'
+  Object.assign(h.subagents.service, { listChildren: undefined, listDescendants: vi.fn(async () => [row]) })
+  const response = await h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue.', manageProcessing: true })
+  expect(response.status).toBe(409)
+  expect(h.runtime.masterId).toBe(old)
+  expect(h.runtime.store.settings().paused).toBe(false)
+})
+
+it('allows inactive historical descendants without loading them', async () => {
+  await h.runtime.idle()
+  const old = h.runtime.masterId
+  h.agents.get(old)!.status = 'idle'
+  Object.assign(h.subagents.service, {
+    listChildren: undefined,
+    listDescendants: vi.fn(async () => [{ kind: 'child', id: 'ended-child', activity: 'inactive' }]),
+  })
+  expect((await h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue.', manageProcessing: true })).status).toBe(200)
+  expect(h.agents.has('ended-child')).toBe(false)
+})
+
+it('refuses an unsupported discovery API without changing dispatch or the main session', async () => {
+  await h.runtime.idle()
+  const old = h.runtime.masterId
+  h.agents.get(old)!.status = 'idle'
+  Object.assign(h.subagents.service, { listChildren: undefined })
+  const response = await h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue.', manageProcessing: true })
+  expect(response.status).toBe(409)
+  expect(h.runtime.masterId).toBe(old)
+  expect(h.runtime.store.settings().paused).toBe(false)
+})

@@ -213,8 +213,12 @@ export class Runtime extends Service implements SourceHost {
       ids.push(target)
     }
     const jobs = this.ctx.get('jobs') as { list(id: string): readonly { owner?: string; status: string }[] } | undefined
-    const subagents = this.ctx.get('subagents') as { listChildren(id: string): Promise<readonly { id: string }[]> } | undefined
-    if (!jobs || !subagents) return { error: 'Cannot verify managed background work.' }
+    const subagents = this.ctx.get('subagents') as {
+      listChildren?: (id: string) => Promise<readonly { id: string }[]>
+      listDescendants?: (id: string) => Promise<readonly { id: string; kind: string; activity?: string }[]>
+    } | undefined
+    if (!jobs || !subagents || (typeof subagents.listDescendants !== 'function' && typeof subagents.listChildren !== 'function'))
+      return { error: 'Cannot verify managed background work: no supported subagent discovery API.' }
     if (this.rotating || this.closing() || (!manageProcessing && !this.store.settings().paused) || expected !== this.masterId)
       return { error: 'Pause dispatch and verify the current main session before rotation.' }
     const notice = (message: unknown) => {
@@ -230,7 +234,11 @@ export class Runtime extends Service implements SourceHost {
         if (id === this.masterId && agent && (agent.inbox.nextTurn.length || agent.inbox.nextStep.some(message => !notice(message)))) return true
         if (id === target && agent && (agent.inbox.nextTurn.length || agent.inbox.nextStep.length)) return true
         if (jobs?.list(id).some(job => job.owner === id && (job.status === 'running' || job.status === 'stopping'))) return true
-        if (subagents && (await subagents.listChildren(id)).some(child => this.ctx.agents.get(child.id as SessionId))) return true
+        // New hosts list recursive descendants, including external work and unreadable branches.
+        if (typeof subagents.listDescendants === 'function') {
+          const descendants = await subagents.listDescendants(id)
+          if (descendants.some(child => child.kind !== 'child' || child.activity !== 'inactive' || this.ctx.agents.get(child.id as SessionId))) return true
+        } else if ((await subagents.listChildren!(id)).some(child => this.ctx.agents.get(child.id as SessionId))) return true
       }
       return false
     }
