@@ -249,7 +249,9 @@ interface Evaluation {
   startedAt: string;
   /** First explicit assessment read; retained as `delivered` for stored-state compatibility. Inbox consumption does not start the clock. */
   delivered?: string;
-  /** Expiration timestamp, active only after the first assessment read; a processing pause shifts it forward by the pause duration. */
+  /** The candidate card was sent to the main Session and started waiting for its first read. */
+  offeredAt?: string;
+  /** Expiration timestamp once the card is sent or opened; processing pauses shift it forward. */
   deadline: string;
   /** Timestamp when processing pause began; resuming shifts `deadline` forward by the pause duration; cleared on resume. */
   pausedAt?: string;

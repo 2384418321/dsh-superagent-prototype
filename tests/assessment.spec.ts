@@ -13,7 +13,7 @@ import { SourceRegistry } from '../src/sources/registry.ts'
 
 /** Assessor fixture backed by in-memory repositories and fake GitHub Issue and file reads. */
 function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.from({ length: 5 }, (_, i) => `comment ${i}`),
-  threadContext?: AssessorHost['threadContext']) {
+  threadContext?: AssessorHost['threadContext'], now?: () => string) {
   const comments = bodies.map((body, i) => ({ id: i, html_url: `https://github.com/acme/widgets/issues/1#c${i}`,
     user: { login: 'bob' }, created_at: '2026-09-09T00:00:00Z', body }))
   const gate = { issue: undefined as Promise<void> | undefined }
@@ -48,7 +48,7 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
   const executor: Executor = { start: async () => {}, deliver: async () => {}, stop: async () => {} }
   const scope = { scope: () => ({ listened: true as const, observed: true }) }
   const outbox = { send: () => {}, status: () => undefined, withdraw: () => {} }
-  engine = new Engine({ repo, policy: () => policy, scope, assessor, executor, outbox })
+  engine = new Engine({ repo, policy: () => policy, scope, assessor, executor, outbox, now })
   const tools: Record<string, (args: unknown, signal: AbortSignal) => Promise<unknown>> = {}
   tools.orchestrator_eval_read = (args, signal) => assessor.read({} as Agent, EvalReadSchema.parse(args), signal)
   tools.orchestrator_eval_decide = (args, signal) => {
@@ -71,7 +71,7 @@ it('holds the next candidate without starting its clock until the assessment end
   let inProgress = false
   const delivered = vi.fn(() => { inProgress = true })
   const host = {
-    engine: { candidate: () => active ? candidate : undefined, candidateRead: delivered },
+    engine: { candidate: () => active ? candidate : undefined, candidateOffered: vi.fn(), candidateRead: delivered },
     effects: { enqueue: vi.fn(), handle: handler, kick }, paused: () => false, assessmentInProgress: () => inProgress,
     deliver: async () => {}, candidateCard: async () => ({}),
   } as unknown as AssessorHost
@@ -88,6 +88,23 @@ it('holds the next candidate without starting its clock until the assessment end
   assessor.release('eval-a')
   expect(kick).toHaveBeenCalled()
   expect(options.limit()).toBe(1)
+})
+
+it('requeues a sent but unopened assessment and frees its slot for another candidate', () => {
+  let now = '2026-09-09T00:00:02.000Z'
+  const s = setup(undefined, undefined, undefined, () => now)
+  s.engine.receive(issue(1)); s.engine.evaluateDue()
+  const old = s.engine.candidate('issue-1')!.evalId
+  s.engine.candidateOffered(old)
+  const thread = s.repo.threads.get('github:1')!
+  expect(thread.evaluating!.offeredAt).toBeDefined()
+  expect(thread.evaluating!.delivered).toBeUndefined()
+  now = '2026-09-09T00:30:03.000Z'
+  const release = vi.spyOn(s.assessor, 'release')
+  s.engine.evaluateDue()
+  expect(release).toHaveBeenCalledWith(old)
+  expect(s.engine.candidate('issue-1')?.evalId).toBeDefined()
+  expect(s.engine.candidate('issue-1')?.evalId).not.toBe(old)
 })
 
 it('starts the deadline on the first explicit assessment read, without renewing it on later reads', async () => {

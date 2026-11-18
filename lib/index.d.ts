@@ -1,4 +1,4 @@
-import { $ as settled, A as MandateBasis, B as TicketEndBy, C as Decision, D as Follow, E as Execution, F as Thread, G as followupOwners, H as TicketOutcome, I as ThreadFact, J as latestReport, K as isoTime, L as ThreadFacts, M as ReportState, N as Strength, O as FollowupRecords, P as Text, Q as runningAssignment, R as ThreadRef, S as ChannelRef, T as Evaluation, U as Trigger, V as TicketInput, W as TriggerDisposition, X as reached, Y as liveTicket, Z as readUntil, _ as ActorRef, a as DomainEvent, at as ReasonCode, b as AssignmentState, c as GateResult, ct as Config, d as Policy, et as threadKey, f as ReplyStatus, g as AcceptMode, h as SourceScope, i as Candidate, it as Reason, j as PolicyEffect, k as Mandate, l as OutboundMessage, lt as Deployment, m as ScopeResult, n as AssessmentOutcome, nt as waitsForPerson, o as DomainEvents, ot as reasonText, p as Repositories, q as latestAssignment, r as Assessor, rt as REASONS, s as Executor, st as said, t as ReceiveResult, tt as ticketOutcome, u as Outbox, ut as DeploymentConfig, v as AdmissionCell, w as DecisionKind, x as Attention, y as Assignment, z as Ticket } from "./intake-aLzkxYYZ.js";
+import { $ as settled, A as MandateBasis, B as TicketEndBy, C as Decision, D as Follow, E as Execution, F as Thread, G as followupOwners, H as TicketOutcome, I as ThreadFact, J as latestReport, K as isoTime, L as ThreadFacts, M as ReportState, N as Strength, O as FollowupRecords, P as Text, Q as runningAssignment, R as ThreadRef, S as ChannelRef, T as Evaluation, U as Trigger, V as TicketInput, W as TriggerDisposition, X as reached, Y as liveTicket, Z as readUntil, _ as ActorRef, a as DomainEvent, at as ReasonCode, b as AssignmentState, c as GateResult, ct as Config, d as Policy, et as threadKey, f as ReplyStatus, g as AcceptMode, h as SourceScope, i as Candidate, it as Reason, j as PolicyEffect, k as Mandate, l as OutboundMessage, lt as Deployment, m as ScopeResult, n as AssessmentOutcome, nt as waitsForPerson, o as DomainEvents, ot as reasonText, p as Repositories, q as latestAssignment, r as Assessor, rt as REASONS, s as Executor, st as said, t as ReceiveResult, tt as ticketOutcome, u as Outbox, ut as DeploymentConfig, v as AdmissionCell, w as DecisionKind, x as Attention, y as Assignment, z as Ticket } from "./intake-CJJPyBuj.js";
 import { Context } from "@deepseek-ai/cordis";
 //#region src/core/part.d.ts
 interface EngineOptions {
@@ -95,7 +95,7 @@ declare class Engine {
    */
   threadClosed(thread: ThreadRef, outcome: 'merged' | 'closed', at: string): void;
   /**
-   * Requeues overdue Evals up to `REQUEUES` times before recording `unavailable` (undelivered Evals never expire), starts the
+   * Requeues overdue Evals up to `REQUEUES` times before recording `unavailable` (Evals that are neither sent nor opened do not expire), starts the
    * Evals of Threads whose queued Triggers wait, and resumes ended tickets a person's message reached while processing was
    * paused. While processing is paused, nothing expires: each Eval in progress notes when the pause began, and its deadline
    * moves forward by the pause's length once processing resumes. Each Eval and each ticket update takes one transaction.
@@ -136,7 +136,9 @@ declare class Engine {
    * is not ready, completed, merged, or dropped.
    */
   reply(request: ReplyRequest): Reply;
-  /** The main Session explicitly opens an assessment: its deadline counts from the first read. */
+  /** The candidate was sent and cannot occupy the assessment slot indefinitely. */
+  candidateOffered(evalId: string): void;
+  /** The main Session explicitly opens an assessment: its decision deadline counts from the first read. */
   candidateRead(evalId: string): void;
   /**
    * Queue a stored Trigger for a fresh Eval, such as a person's replay; returns false while an Eval holds it.
@@ -233,7 +235,7 @@ declare class Engine {
 /** What Sources ask and tell the Engine. */
 type EngineForSources = Pick<Engine, 'receive' | 'bindThread' | 'threadClosed'>;
 /** What the main Session asks of the Engine. */
-type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateRead' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'>;
+type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateOffered' | 'candidateRead' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'>;
 /** What people ask of the Engine, through the panel or the main Session. */
 type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'reevaluate' | 'unsubscribe' | 'dismiss'>;
 /** What Settings tells the Engine. */

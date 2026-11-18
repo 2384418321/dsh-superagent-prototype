@@ -30,7 +30,7 @@ export class Evals extends EnginePart {
   /**
    * Expire a Thread's Eval past its deadline (see `expire`), unless processing is paused: then the Eval notes when the
    * processing pause began, and once processing resumes its deadline moves forward by the pause's length. An Eval whose
-   * assessment has not been explicitly opened does not expire.
+   * candidate card has not been sent and has not been opened does not expire.
    */
   due(thread: Thread, policy: Policy): void {
     const evaluation = thread.evaluating
@@ -40,11 +40,20 @@ export class Evals extends EnginePart {
     else if (evaluation.pausedAt) {
       evaluation.deadline = new Date(Date.parse(evaluation.deadline) + Date.parse(now) - Date.parse(evaluation.pausedAt)).toISOString()
       delete evaluation.pausedAt
-    } else if (evaluation.delivered && evaluation.deadline <= now) { this.expire(thread); return }
+    } else if ((evaluation.offeredAt || evaluation.delivered) && evaluation.deadline <= now) { this.expire(thread); return }
     else return
     this.repo.threads.save(thread)
   }
-  /** The first explicit assessment read starts the deadline; subsequent reads do not renew it. */
+  /** Bound the time an unread card can hold the slot, giving the main Session time to finish its current work. */
+  offered(evalId: string, policy: Policy): void {
+    const thread = this.repo.threads.active().find(item => item.evaluating?.id === evalId)
+    const evaluation = thread?.evaluating
+    if (!thread || !evaluation || evaluation.offeredAt || evaluation.delivered) return
+    evaluation.offeredAt = this.now()
+    evaluation.deadline = new Date(Date.parse(evaluation.offeredAt) + 3 * policy.evalTimeoutMs).toISOString()
+    this.repo.threads.save(thread)
+  }
+  /** The first explicit assessment read starts the decision deadline; later reads do not renew it. */
   readStarted(evalId: string, policy: Policy): void {
     const thread = this.repo.threads.active().find(item => item.evaluating?.id === evalId)
     if (!thread?.evaluating || thread.evaluating.delivered) return

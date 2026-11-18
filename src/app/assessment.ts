@@ -48,7 +48,7 @@ const NO_CONTEXT = 'This Source gives no Thread context; assess the Trigger\'s o
 /** Host dependencies used by `MasterAssessor`. */
 export interface AssessorHost {
   /** Active evaluations in `Engine` that the assessor reads and decides. */
-  readonly engine: Pick<EngineForMainSession, 'candidate' | 'candidateRead' | 'decide'>
+  readonly engine: Pick<EngineForMainSession, 'candidate' | 'candidateOffered' | 'candidateRead' | 'decide'>
   readonly commands: Commands
   readonly deployment: Deployment
   /** Durable effect queue through which candidate assessments are delivered. */
@@ -103,6 +103,7 @@ export class MasterAssessor implements Assessor {
       try {
         await this.host.deliver(`candidate:${evalId}`, JSON.stringify({ kind: 'candidate', ...await this.host.candidateCard(candidate) }),
           AbortSignal.any([abort.signal, this.controller.signal]), recovery)
+        this.host.engine.candidateOffered(evalId)
       } catch (error) {
         this.deliveries.delete(evalId)
         if (!abort.signal.aborted) throw error
