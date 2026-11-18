@@ -15,9 +15,11 @@ interface Jobs {
 }
 /** What the Executor uses of DSH's subagents: joining a worker's subagents that work, its subagents, and releasing them. */
 interface Subagents {
-  waitForChildren(parent: Agent): Promise<boolean>
-  listChildren(parentSessionId: string): Promise<readonly { id: string }[]>
-  drainChildren(parent: Agent, childIds: readonly string[]): Promise<void>
+  waitForTreeWork?(parent: Agent): Promise<boolean>
+  drainDescendants?(parents: readonly Agent[]): Promise<void>
+  waitForChildren?(parent: Agent): Promise<boolean>
+  listChildren?(parentSessionId: string): Promise<readonly { id: string }[]>
+  drainChildren?(parent: Agent, childIds: readonly string[]): Promise<void>
 }
 /** How long a stop waits for a killed job to end, collecting its end so the worker is not woken to hear of it. */
 const KILL_WAIT_MS = 10_000
@@ -49,7 +51,9 @@ const joins = new WeakMap<Agent, Promise<boolean>>()
 function childrenEnd(subagents: Subagents, agent: Agent): Promise<boolean> {
   let join = joins.get(agent)
   if (!join) {
-    join = subagents.waitForChildren(agent).finally(() => { joins.delete(agent) })
+    const wait = subagents.waitForTreeWork ?? subagents.waitForChildren
+    if (typeof wait !== 'function') throw new Error('Subagent wait API is unavailable')
+    join = wait.call(subagents, agent).finally(() => { joins.delete(agent) })
     joins.set(agent, join)
   }
   return join
@@ -136,15 +140,22 @@ export async function collectJob(ctx: Context, sessionId: string, job: { id: str
 /**
  * Release the worker's live subagents, for a bounded time. DSH delivers each one's end to the worker before the release
  * returns, which wakes it, so the worker's turn is cancelled after, keeping its inbox when `keepInbox`, and the stop ends
- * with that turn. Its Session still admits subagents.
+ * with that turn. Current hosts close this live root's admission until it leaves the registry.
  */
 export async function stopSubagents(ctx: Context, agent: Agent, keepInbox = false): Promise<void> {
   const subagents = subagentsOf(ctx)
   if (!subagents) return
-  // The catalog lists every subagent the Session had; one that ended has no agent.
-  const live = (await subagents.listChildren(agent.id)).map(child => child.id).filter(id => ctx.agents.get(id as SessionId))
-  if (!live.length) return
-  try { await until(subagents.drainChildren(agent, live), undefined, DRAIN_LIMIT_MS) }
+  let drain: Promise<void>
+  if (typeof subagents.listChildren === 'function' && typeof subagents.drainChildren === 'function') {
+    // Legacy catalogs include ended children whose Agent is no longer loaded.
+    const live = (await subagents.listChildren(agent.id)).map(child => child.id).filter(id => ctx.agents.get(id as SessionId))
+    if (!live.length) return
+    drain = subagents.drainChildren(agent, live)
+  } else if (typeof subagents.drainDescendants === 'function') {
+    // Let the host include external children and pending startups absent from the local Agent registry.
+    drain = subagents.drainDescendants([agent])
+  } else throw new Error('Subagent drain API is unavailable')
+  try { await until(drain, undefined, DRAIN_LIMIT_MS) }
   finally {
     if (agent.status !== 'idle') cancelled.add(agent)
     agent.cancel({ kind: 'user' }, { keepInbox })

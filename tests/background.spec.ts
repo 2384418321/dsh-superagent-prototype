@@ -75,3 +75,55 @@ it('gives up a release of subagents that does not end within 10 seconds, and can
   } finally { vi.useRealTimers() }
   expect(agent.cancel).toHaveBeenCalledWith({ kind: 'user' }, { keepInbox: false })
 })
+
+it('joins work through the current host tree API without legacy methods', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  const waitForTreeWork = vi.fn(async () => false)
+  Object.assign(subagents, { waitForChildren: undefined, waitForTreeWork })
+  expect(await untilQuiet(ctx, agent, new AbortController().signal)).toBe(true)
+  expect(waitForTreeWork).toHaveBeenCalledWith(agent)
+})
+
+it('shares an uncancellable current-host join across aborted looks', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  const waitForTreeWork = vi.fn(() => new Promise<boolean>(() => {}))
+  Object.assign(subagents, { waitForChildren: undefined, waitForTreeWork })
+  for (let look = 0; look < 3; look++) {
+    const stop = new AbortController()
+    const quiet = untilQuiet(ctx, agent, stop.signal)
+    stop.abort()
+    expect(await quiet).toBe(false)
+  }
+  expect(waitForTreeWork).toHaveBeenCalledTimes(1)
+})
+
+it('drains the current host tree including external and not-yet-published descendants', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  const drainDescendants = vi.fn(async () => { (agent as { status: string }).status = 'running' })
+  Object.assign(subagents, { listChildren: undefined, drainChildren: undefined, drainDescendants })
+  await stopSubagents(ctx, agent, true)
+  expect(drainDescendants).toHaveBeenCalledWith([agent])
+  expect(agent.cancel).toHaveBeenCalledWith({ kind: 'user' }, { keepInbox: true })
+  expect(agent.cancel.mock.invocationCallOrder[0]).toBeGreaterThan(drainDescendants.mock.invocationCallOrder[0]!)
+})
+
+it('preserves a current-host drain failure after cancelling any awakened turn', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  Object.assign(subagents, { listChildren: undefined, drainChildren: undefined,
+    drainDescendants: async () => { (agent as { status: string }).status = 'running'; throw new Error('TREE_DRAIN_FAILED') } })
+  await expect(stopSubagents(ctx, agent)).rejects.toThrow('TREE_DRAIN_FAILED')
+  expect(agent.cancel).toHaveBeenCalledWith({ kind: 'user' }, { keepInbox: false })
+})
+
+it('fails explicitly rather than declaring an unsupported host quiet', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  Object.assign(subagents, { waitForChildren: undefined })
+  await expect(untilQuiet(ctx, agent, new AbortController().signal)).rejects.toThrow('Subagent wait API is unavailable')
+})
+
+it('fails explicitly instead of skipping teardown on an unsupported host', async () => {
+  const { ctx, agent, subagents } = setup(async () => false)
+  Object.assign(subagents, { listChildren: undefined, drainChildren: undefined })
+  await expect(stopSubagents(ctx, agent)).rejects.toThrow('Subagent drain API is unavailable')
+  expect(agent.cancel).not.toHaveBeenCalled()
+})
