@@ -635,6 +635,26 @@ it('restores an undelivered candidate after a restart even when its enqueue effe
   await next.ready
 })
 
+it('delivers the next candidate when a sent assessment stays unopened past its deadline', async () => {
+  const first = feishu('51', '修复第一个问题', { mentions: [] })
+  const next = feishu('52', '修复第二个问题', { mentions: [] })
+  const delivered = () => relays(runtime.masterId).filter(item => item.kind === 'candidate').map(item => item.trigger_id)
+
+  await receive(first)
+  await receive(next)
+  expect(delivered()).toEqual([first.id])
+
+  const thread = runtime.store.threads.get(`feishu:${CHAT}:om_51`)!
+  expect(thread.evaluating?.offeredAt).toBeDefined()
+  expect(thread.evaluating?.delivered).toBeUndefined()
+  runtime.store.threads.save({ ...thread, evaluating: { ...thread.evaluating!, deadline: '2000-01-01T00:00:00.000Z' } })
+  runtime.engine.evaluateDue()
+  await runtime.idle()
+
+  expect(delivered()).toEqual([first.id, next.id])
+  expect(runtime.store.tickets.list()).toEqual([])
+})
+
 it('recovers a consumed but unopened assessment once, reuses a pending notice, and preserves a claimed deadline on restart', async () => {
   const trigger = feishu('32', '这个文案好奇怪，改成“浏览网页”吧', { mentions: [] })
   await receive(trigger)
