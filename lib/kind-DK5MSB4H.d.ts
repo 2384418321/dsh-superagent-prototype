@@ -622,6 +622,7 @@ declare const GithubConfigSchema: z.ZodObject<{
   observePulls: z.ZodDefault<z.ZodBoolean>;
   observeComments: z.ZodDefault<z.ZodBoolean>;
   observeCi: z.ZodDefault<z.ZodBoolean>;
+  developmentHandoffLabels: z.ZodDefault<z.ZodString>;
   sweepLabel: z.ZodDefault<z.ZodString>;
   sweepIncludeAttention: z.ZodDefault<z.ZodBoolean>;
   sweepEverySeconds: z.ZodDefault<z.ZodNumber>;

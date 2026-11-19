@@ -1,6 +1,6 @@
 /** Normalizes GitHub issues, pull requests, comments, reviews, and CI transitions into domain Triggers. */
 import { z } from 'zod'
-import { key, type ChannelRef, type Trigger } from '../core/index.ts'
+import { key, ticketStage, type ChannelRef, type Ticket, type Trigger } from '../core/index.ts'
 import { escapeRegExp, sameName } from '../infra/text.ts'
 
 export const SOURCE = 'github'
@@ -15,6 +15,13 @@ export function githubAddress(url: string, repository: string): { number: number
   const match = address.exec(url)
   if (!match || !sameName(match[1]!, repository)) return undefined
   return { number: Number(match[3]), pr: match[2]!.toLowerCase() !== 'issues', ...match[4] ? { discussion: Number(match[4]) } : {} }
+}
+// The mandate's primary issue determines the ticket's scope. Related issues and PRs supply context only.
+export function handoffIssue(ticket: Ticket, origin: Trigger | undefined, repository: string): number | undefined {
+  if (ticketStage(ticket).stage !== 'idle' || ticket.undelivered.length || ticket.follows?.some(follow => follow.own && !follow.closed)) return
+  if (origin?.source !== SOURCE || origin.meta.isPr !== false || !origin.url) return
+  const address = githubAddress(origin.url, repository)
+  if (address && !address.pr && address.number === origin.meta.number) return address.number
 }
 /** GitHub returns a deleted account as `null` and displays it as `ghost`. */
 export const UserSchema = z.looseObject({ login: z.string(), type: z.string().optional() }).nullable()
@@ -35,6 +42,7 @@ export type GithubComment = z.infer<typeof CommentSchema>
 export const IssueSchema = CommentSchema.extend({
   number: z.number(), title: z.string(), state: z.string(), created_at: z.string(), html_url: z.string(),
   pull_request: z.looseObject({ url: z.string() }).nullish(),
+  labels: z.array(z.looseObject({ name: z.string() })).nullish(),
 })
 export type GithubIssue = z.infer<typeof IssueSchema>
 type Opened = Pick<GithubIssue, 'number' | 'title' | 'body' | 'user' | 'created_at' | 'html_url'>

@@ -2,6 +2,8 @@
 import { liveTicket, threadKey, ticketStage, type AcceptMode, type AdmissionCell, type MandateBasis, type Ticket,
   type TicketStage } from '../../core/index.ts'
 import { workerSessionId } from '../../executor/dsh.ts'
+import { handoffIssue } from '../../sources/github-trigger.ts'
+import type { GithubConfig } from '../../sources/github.ts'
 import type { Store } from '../store.ts'
 import { channelLink, decisionView, newestFirst, page, snapshot, threadSummary, ticketLine, type Snapshot,
   type ViewHost } from './records.ts'
@@ -32,10 +34,25 @@ export function basisFacts(basis: MandateBasis, rule: Snapshot['rule']): { facts
   if (authority) facts.push({ name: 'legacyAuthority', value: authority })
   return { facts, legacy: authority !== undefined }
 }
+export function executionHandoffs({ store, sources }: ViewHost): (ticket: Ticket) => boolean {
+  const github = sources.instance<GithubConfig>('github')
+  const labels = github?.config.developmentHandoffLabels.split(',').map(label => label.trim()).filter(Boolean) ?? []
+  if (!github?.enabled || !github.config.repository || !labels.length) return () => false
+  const { repository } = github.config
+  return ticket => {
+    const number = handoffIssue(ticket, store.triggers.get(ticket.origin.triggerId), repository)
+    if (number === undefined) return false
+    const status = store.threads.get(`github:${number}`)?.meta.issueStatus as { repository: string; labels: string[] } | undefined
+    if (status?.repository !== repository) return false
+    const lifecycle = status.labels.filter(label => label.startsWith('status:') || labels.includes(label))
+    return lifecycle.length === 1 && labels.includes(lifecycle[0]!)
+  }
+}
 export function ticketList(host: ViewHost, stage: 'open' | TicketStage['stage'], offset: number, limit: number) {
   const view = snapshot(host)
   const { store } = view
-  const shown = (ticket: Ticket) => stage === 'open' ? liveTicket(ticket) : ticketStage(ticket).stage === stage
+  const handedOff = executionHandoffs(view)
+  const shown = (ticket: Ticket) => !handedOff(ticket) && (stage === 'open' ? liveTicket(ticket) : ticketStage(ticket).stage === stage)
   const tickets = (stage === 'ended' ? store.tickets.list() : store.tickets.open()).filter(shown).sort(newestFirst)
   const result = page(tickets, offset, limit)
   return { ...result, items: result.items.map(ticket => ticketRow(view, ticket)) }

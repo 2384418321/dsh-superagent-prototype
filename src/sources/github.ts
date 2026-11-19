@@ -5,7 +5,7 @@ import { sameName } from '../infra/text.ts'
 import { GithubAccountsSchema } from '../deployment.ts'
 import { CliError, validItems, type Tally } from '../infra/commands.ts'
 import { ciCounts, ciFact, ciFailures, ciSummary, githubThreadContext, pullChecks } from './github-read.ts'
-import { branchCiTrigger, ciTrigger, commentTrigger, CommentSchema, githubAddress, issueTrigger, IssueSchema, pullTrigger, SOURCE }
+import { branchCiTrigger, ciTrigger, commentTrigger, CommentSchema, githubAddress, handoffIssue, issueTrigger, IssueSchema, pullTrigger, SOURCE }
   from './github-trigger.ts'
 import { githubLink, sendGithub } from './github-channel.ts'
 import type { GithubComment, PullRef } from './github-trigger.ts'
@@ -28,6 +28,7 @@ const GithubConfigSchema = GithubAccountsSchema.extend({ pollSeconds: z.number()
   failuresBeforeError: z.number().int().min(1).max(20).default(3),
   observeIssues: z.boolean().default(false), observePulls: z.boolean().default(false), observeComments: z.boolean().default(false),
   observeCi: z.boolean().default(false),
+  developmentHandoffLabels: z.string().regex(/^[A-Za-z0-9:_,.\- ]{0,180}$/).default(''),
   /** Existing-Issue sweep: labels to select, cadence, and ceilings (see sweep.ts). */
   sweepLabel: z.string().regex(/^[A-Za-z0-9:_,.\- ]{0,180}$/).default(''), sweepIncludeAttention: z.boolean().default(false), sweepEverySeconds: z.number().int().min(300).max(86_400).default(900),
   sweepMaxPerRound: z.number().int().min(1).max(5).default(1), sweepMaxOpenTickets: z.number().int().min(0).max(20).default(3) }).strict()
@@ -60,6 +61,10 @@ export const githubKind: SourceKind<GithubConfig> = {
       hint: { zh: '打开后，Issue 和 PR 上没有 @ 智能体的评论和代码评论也会收到，由策略的接收表决定是否成为候选。', en: 'Comments and review comments on Issues and PRs that do not mention the agent are received too, and the Policy\'s admission table decides whether they become candidates.' } },
     { key: 'observeCi', type: 'switch', label: { zh: '接收默认分支的 CI', en: 'Receive the default branch\'s CI' },
       hint: { zh: '打开后，默认分支的 CI 失败和恢复会收到，由策略的接收表决定是否成为候选。', en: 'Failures of the default branch\'s CI, and its recovery, are received, and the Policy\'s admission table decides whether they become candidates.' } },
+    { key: 'developmentHandoffLabels', type: 'text', advanced: true,
+      label: { zh: '开发交付状态标签', en: 'Development handoff status labels' },
+      hint: { zh: '用逗号分隔。工单自身的唯一状态命中时，空闲工单退出执行列表。留空关闭。',
+        en: 'Comma-separated. Hide idle tickets when their own Issue has one matching status. Empty disables this.' } },
     { key: 'sweepLabel', type: 'text', label: { zh: '存量 Issue 扫描的标签', en: 'Label of the Issue sweep' }, advanced: true,
       pattern: '[A-Za-z0-9:_,.\\- ]{0,180}',
       hint: { zh: '通常是 status:ready；多个标签用逗号分隔且须全部命中。留空表示不扫描。命中后仍过策略：智能体账号须在「评论可以成为候选的机器人」名单里，扫描结果才成为推断候选，否则按策略忽略；扫描永远不会产生明确请求。', en: 'Usually status:ready; comma-separated labels must all match. Empty disables sweeping. The Policy still gates it: the agent account must be on the bots list, otherwise the swept Issue is ignored; a sweep never makes an explicit request.' } },
@@ -300,6 +305,7 @@ export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promi
   await pollRepository(ctx, round)
   await pollTicketPulls(ctx, signal, round)
   await pollThreads(ctx, signal, round)
+  await pollDevelopmentHandoffs(ctx, round)
   if ('error' in notified) throw notified.error
   const { count, interval } = notified.value
   if (signal?.aborted) return interval
@@ -311,6 +317,28 @@ export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promi
   ctx.report('github', { state: 'ready', detail: `${count} notifications; next poll ≥ ${interval}s${dropped}`, at: round.started })
   return interval
 }
+async function pollDevelopmentHandoffs(ctx: SourceContext, round: Round): Promise<void> {
+  if (!ctx.config<GithubConfig>(SOURCE)?.developmentHandoffLabels) return
+  const { repository } = ctx.deployment
+  const numbers = new Set(ctx.tickets.open().flatMap(ticket => {
+    const number = handoffIssue(ticket, ctx.triggers.get(ticket.origin.triggerId), repository)
+    return number === undefined ? [] : [number]
+  }))
+  for (const number of numbers) {
+    if (stopped(ctx, round)) return
+    const thread = `github:${number}`
+    try {
+      const issue = await ctx.commands.withSignal(round.signal).api(IssueSchema, `issues/${number}`)
+      const labels = issue.labels?.map(label => label.name) ?? []
+      ctx.threads.patch(thread, { issueStatus: issue.pull_request ? undefined : { repository, labels } })
+    } catch (error) {
+      if (stopped(ctx, round)) return
+      ctx.threads.patch(thread, { issueStatus: undefined })
+      if (!deleted(error)) round.failures.push(`#${number} status: ${String(error)}`)
+    }
+  }
+}
+
 /** Reads notifications since the cursor and each Issue or PR they name, advancing the cursor atomically with the retry map for failed reads; deleted (410) Issues are dropped once their error is recorded. */
 async function pollNotifications(ctx: SourceContext, round: Round): Promise<{ count: number; interval: number }> {
   const { state } = ctx

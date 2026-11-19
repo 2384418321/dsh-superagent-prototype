@@ -599,6 +599,32 @@ describe('github source', () => {
     expect(h.store.threads.get('github:12')!.meta).not.toHaveProperty('pollError')
     h.store.close()
   })
+  it('refreshes an idle ticket’s primary Issue status and clears stale evidence on read failure', async () => {
+    const h = host()
+    h.store.saveSettings({ ...h.store.settings(), sources: { github: { enabled: true,
+      config: { developmentHandoffLabels: 'status:needs-release,status:released' } } } })
+    const at = new Date().toISOString()
+    const origin: Trigger = { id: 'source-ticket', source: 'github', threads: [{ source: 'github', id: '7' }],
+      actor: { source: 'github', id: 'alice' }, human: true, at, text: 'implement', url: 'https://github.com/acme/widgets/issues/7',
+      meta: { number: 7, isPr: false } }
+    h.store.triggers.save(origin)
+    h.store.tickets.save({ ...openTicket('ticket'), assignments: [{ id: 'a', createdAt: at, state: 'running',
+      report: { state: 'waiting', summary: '', at } }] })
+    subscribed(h, origin.threads[0]!, { number: 7, isPr: false, title: 'Scope' })
+    const routes: Record<string, unknown> = { notifications: [], 'issues/7': issue(7, { labels: [{ name: 'status:needs-release' }] }) }
+    const reads = github(h, routes)
+    const status = () => h.store.threads.get('github:7')!.meta.issueStatus
+    await pollRound(h)
+    expect(status()).toEqual({ repository: 'acme/widgets', labels: ['status:needs-release'] })
+    expect(bare(reads).filter(path => path === 'issues/7')).toHaveLength(1)
+    routes['issues/7'] = issue(7, { labels: [{ name: 'status:ready' }] })
+    await pollRound(h)
+    expect(status()).toEqual({ repository: 'acme/widgets', labels: ['status:ready'] })
+    routes['issues/7'] = refused(410, 'Gone')
+    await pollRound(h)
+    expect(status()).toBeUndefined()
+    h.store.close()
+  })
   it('retries a transient 503 while polling a subscribed thread without losing its comment', async () => {
     const h = host()
     h.store.threads.save({ key: 'github:7', ref: { source: 'github', id: '7' }, createdAt: '2026-09-01T00:00:00Z',
@@ -1040,7 +1066,7 @@ it('reports GitHub as failing only after the configured number of consecutive fa
   expect(pollFailure(2, 3, eof)).toBeUndefined()
   expect(pollFailure(3, 3, eof)).toEqual({ state: 'error', detail: '3 consecutive failed polls; last: Error: Get "https://api.github.com/x": EOF', code: 'pollFailures', values: { count: '3', error: 'Error: Get "https://api.github.com/x": EOF' } })
   expect(githubKind.schema.parse({})).toEqual({ repository: '', cli: '', pollSeconds: 60, failuresBeforeError: 3, observeIssues: false,
-    observePulls: false, observeComments: false, observeCi: false, sweepLabel: '', sweepIncludeAttention: false, sweepEverySeconds: 900, sweepMaxPerRound: 1,
+    observePulls: false, observeComments: false, observeCi: false, developmentHandoffLabels: '', sweepLabel: '', sweepIncludeAttention: false, sweepEverySeconds: 900, sweepMaxPerRound: 1,
     sweepMaxOpenTickets: 3 })
 })
 it('sweeps failed and unclassified issues beyond the first page without reassigning live or PR-backed work', async () => {
