@@ -11,12 +11,12 @@ export function ticketStage(ticket: Ticket): TicketStage {
   if (ticket.delivery) return { stage: 'person', action: 'delivery' }
   if (ticket.attention) return { stage: 'person', action: 'answer' }
   const assignment = latestAssignment(ticket)
-  const report = assignment?.report?.state
-  if (report === 'ready') return { stage: 'person', action: 'review' }
+  const report = assignment?.report
+  if (report?.state === 'ready') return { stage: 'person', action: 'review' }
   // A human follow-up after a blocked or failed report returns the ticket to the executor.
-  if ((report === 'blocked' || report === 'failed') && waitsForPerson(ticket)) return { stage: 'person', action: report }
+  if ((report?.state === 'blocked' || report?.state === 'failed') && waitsForPerson(ticket)) return { stage: 'person', action: report.state }
   if (!assignment || assignment.state === 'pending') return { stage: 'working', action: 'queued' }
-  if (report === 'waiting' || assignment.state === 'ended') return { stage: 'idle' }
+  if (assignment.state === 'ended' || (report?.state === 'waiting' && (assignment.deliveredAt ?? '') <= report.at)) return { stage: 'idle' }
   return { stage: 'working' }
 }
 

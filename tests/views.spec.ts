@@ -8,7 +8,7 @@ import { SourceRegistry } from '../src/sources/registry.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
 import { githubKind } from '../src/sources/github.ts'
 import { snapshot, threadSummary, ticketSummary, triggerView } from '../src/app/views/records.ts'
-import { basisFacts, ticketDetail } from '../src/app/views/tickets.ts'
+import { basisFacts, ticketDetail, ticketList } from '../src/app/views/tickets.ts'
 import { threadDetail } from '../src/app/views/threads.ts'
 import { droppedReplies, sourcesStatus } from '../src/app/views/sources.ts'
 import { overview } from '../src/app/views/overview.ts'
@@ -322,4 +322,37 @@ it('reads each ticket a page\'s follow-ups reached once, and nothing for a messa
   const records = { tickets: { get: vi.fn() }, threads: { get: vi.fn() }, triggers: store.triggers }
   expect(followupOwners(store.triggers.get('f3')!, records)).toEqual([])
   expect([records.tickets.get, records.threads.get].map(read => read.mock.calls.length)).toEqual([0, 0])
+})
+
+it('keeps only actionable work in the execution queue after a GitHub development handoff', () => {
+  const host = views()
+  store.saveSettings({ ...store.settings(), sources: { github: { enabled: true,
+    config: { repository: 'acme/widgets', developmentHandoffLabels: 'status:needs-release,status:released' } } } })
+  for (const [id, number, labels] of [
+    ['handoff', 41, ['status:needs-release']],
+    ['acceptance', 42, ['status:released']],
+    ['reopened', 43, ['status:acceptance-not-passed']],
+    ['conflicting', 44, ['status:in-progress', 'status:released']],
+    ['working', 45, ['status:released']],
+    ['open-pr', 46, ['status:released']],
+    ['unverified', 47, undefined],
+  ] as const) {
+    live(id)
+    const issue = { source: 'github', id: String(number) }
+    store.triggers.save({ ...message(id, { source: 'github', id: 'alice' }), threads: [issue],
+      url: `https://github.com/acme/widgets/issues/${number}`, meta: { number, isPr: false } })
+    store.threads.save({ key: `github:${number}`, ref: issue, createdAt: at, subscriptions: [id], correlated: [], pending: [],
+      meta: labels ? { issueStatus: { repository: 'acme/widgets', labels } } : {} })
+    store.tickets.save({ ...store.tickets.get(id)!, origin: { triggerId: id, triggerIds: [id] },
+      follows: id === 'open-pr' ? [{ thread: 'github:50', own: true }] : [],
+      assignments: [{ id, createdAt: at, state: 'running', report: { state: 'waiting', summary: '', at },
+        ...(id === 'working' ? { deliveredAt: new Date(Date.parse(at) + 1000).toISOString() } : {}) }] })
+  }
+  const ids = (stage: 'open' | 'idle') => ticketList(host, stage, 0, 50).items.map(item => item.id).sort()
+  expect(ids('open')).toEqual(['conflicting', 'open-pr', 'reopened', 'unverified', 'working'])
+  expect(ids('idle')).toEqual(['conflicting', 'open-pr', 'reopened', 'unverified'])
+  expect(overview(host, {}, '', { running: 1, queued: 0 }).executor.idle).toBe(4)
+  expect(ticketDetail(host, 'handoff')?.id).toBe('handoff')
+  store.threads.patchMeta('github:41', { issueStatus: { repository: 'acme/widgets', labels: ['status:ready'] } })
+  expect(ids('open')).toContain('handoff')
 })
