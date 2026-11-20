@@ -111,7 +111,9 @@ export class MasterAssessor implements Assessor {
     }, { limit: () => host.paused() || this.deliveries.size || host.assessmentInProgress() ? 0 : 1 })
   }
   /** Enqueues an `assessment` effect to deliver `candidate`'s card to the main Session. */
-  request(candidate: Candidate, recovery?: boolean): void { this.host.effects.enqueue('assessment', candidate.evalId, { triggerId: candidate.triggers[0]!.id, ...(recovery ? { recovery } : {}) }) }
+  request(candidate: Candidate, recovery?: boolean, first = false): void {
+    this.host.effects.enqueue('assessment', candidate.evalId, { triggerId: candidate.triggers[0]!.id, ...(recovery ? { recovery } : {}) }, first)
+  }
   /** Whether `evalId` is still the active evaluation for `trigger`. */
   private live(evalId: string, trigger: Trigger): boolean { return this.host.engine.candidate(trigger.id)?.evalId === evalId }
   /** Drop an Eval's context and reads once it finishes; any running load for it discards its result. */

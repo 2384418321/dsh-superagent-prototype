@@ -238,10 +238,7 @@ export class Runtime extends Service implements SourceHost {
     const busyDescendants = async (agent: Agent) => subagents.listDescendants
       ? (await subagents.listDescendants(agent.id)).some(child => child.kind !== 'child' || child.activity !== 'inactive' || this.ctx.agents.get(child.id as SessionId))
       : (await subagents.listChildren!(agent.id)).some(child => this.ctx.agents.get(child.id as SessionId))
-    const activeAssessment = () => this.store.threads.active().some(thread => {
-      const evaluation = thread.evaluating
-      return evaluation?.offeredAt || evaluation?.delivered
-    })
+    const activeAssessment = () => this.store.threads.active().some(thread => !!thread.evaluating?.delivered)
     if (!old || !idle(old, true) || activeAssessment()) return { error: 'masterBusy' }
     this.rotating = true
     const masterId = target ?? `orchestrator-${randomUUID()}`
@@ -270,6 +267,10 @@ export class Runtime extends Service implements SourceHost {
       if (this.closing() || expected !== this.masterId || (!manageProcessing && !this.store.settings().paused))
         return { error: 'masterChanged' }
       if (descendants.some(Boolean) || !idle(old, true) || !idle(next, false) || activeAssessment()) return { error: 'masterBusy' }
+      const unopened = this.store.threads.active().flatMap(({ evaluating }) => evaluating?.offeredAt ? [evaluating] : [])
+        .sort((a, b) => b.offeredAt!.localeCompare(a.offeredAt!))
+      const candidates = unopened.map(evaluation => this.engine.candidate(evaluation.triggerIds[0]!))
+      if (unopened.some((evaluation, index) => candidates[index]?.evalId !== evaluation.id)) return { error: 'masterWorkUnverified' }
       const pending = old.inbox.nextStep.filter(notice)
       const text = pending.length ? `${handoff}\n\n旧主会话未读通知（仅作为待核事实）：\n${JSON.stringify(pending)}` : handoff
       if (text.length > 100000) return { error: 'masterHandoffTooLong' }
@@ -277,8 +278,11 @@ export class Runtime extends Service implements SourceHost {
         this.store.set(KV.runtime.masterId, masterId)
         this.store.set(KV.runtime.handoff, { masterId, text, deliveryId: randomUUID() })
         this.effects.enqueue('handoff', masterId, {})
+        // Preserve the same eval and deadline across the handoff, before later assessments.
+        for (const candidate of candidates) this.assessor.request(candidate!, true, true)
       })
       committed = true
+      for (const evaluation of unopened) this.assessor.release(evaluation.id)
       this.sessions.release(old)
       // Only the machine notices already covered by the durable handoff can leave the old inbox.
       for (const message of pending) {

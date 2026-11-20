@@ -176,22 +176,51 @@ it('does not strand unconsumed messages in the old main inbox', async () => {
   expect(h.runtime.store.get(KV.runtime.masterId)).toBe(old)
 })
 
-it('keeps an already offered assessment with the old main session', async () => {
+it('moves an unopened offer ahead of waiting assessments without resuming processing', async () => {
   const old = h.runtime.masterId
   const trigger = feishu('1', '@bot 查一下回归')
   h.runtime.receive(trigger)
   await h.runtime.idle()
   expect(h.candidates()).toEqual([trigger.id])
+  const waiting = feishu('2', '@bot 查另一条回归')
+  h.runtime.receive(waiting)
+  await h.runtime.idle()
+  await h.runtime.settings.pause(true, 'panel')
+  await h.runtime.idle()
   const evaluation = h.runtime.store.threads.active().find(thread => thread.evaluating?.triggerIds.includes(trigger.id))!.evaluating!
   expect(evaluation.offeredAt).toBeDefined()
   expect(evaluation.delivered).toBeUndefined()
+  expect(evaluation.pausedAt).toBeDefined()
+  const oldAgent = h.agents.get(old)!
+  oldAgent.status = 'idle'
+  oldAgent.inbox.nextStep.length = 0
+  const response = await h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue.' })
+  expect(response.status).toBe(200)
+  const replacementDeliveries = () => h.deliveries.mock.calls.map(([call]) => call)
+    .filter(call => call.sessionId === response.body.masterId).map(({ text }) => text)
+  await h.runtime.idle()
+  expect(h.runtime.store.settings().paused).toBe(true)
+  expect(h.runtime.store.threads.active().find(thread => thread.evaluating?.id === evaluation.id)?.evaluating).toEqual(evaluation)
+  expect(replacementDeliveries()).toEqual(['Continue.'])
+  await h.runtime.settings.pause(false, 'panel')
+  await h.runtime.idle()
+  expect(replacementDeliveries()).toEqual(['Continue.', expect.stringContaining(trigger.id)])
+})
+
+it('keeps an opened assessment with the old main session', async () => {
+  const old = h.runtime.masterId
+  const trigger = feishu('1', '@bot 查一下回归')
+  h.runtime.receive(trigger)
+  await h.runtime.idle()
+  const evaluation = h.runtime.store.threads.active().find(thread => thread.evaluating?.triggerIds.includes(trigger.id))!.evaluating!
+  h.runtime.engine.candidateRead(evaluation.id)
   const oldAgent = h.agents.get(old)!
   oldAgent.status = 'idle'
   oldAgent.inbox.nextStep.length = 0
   const response = await h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue.', manageProcessing: true })
   expect(response.status).toBe(409)
   expect(h.runtime.masterId).toBe(old)
-  expect(h.runtime.store.threads.active().find(thread => thread.evaluating?.id === evaluation.id)?.evaluating).toEqual(evaluation)
+  expect(h.runtime.store.threads.active().find(thread => thread.evaluating?.id === evaluation.id)?.evaluating?.delivered).toBeDefined()
 })
 
 it('routes an assessment that was still queued to the replacement', async () => {
