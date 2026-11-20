@@ -16,6 +16,8 @@ The bundle defines `dsh-superagent-worker` for Executors and `dsh-superagent-rou
 
 Opening a blank managed Session in the desktop client can select the profile's default preset. dsh-superagent restores its role-specific preset before the first turn.
 
+Both managed presets use Harness's native history compaction at 45% of the model context window or earlier if the output reservation requires it. A provider-confirmed overflow permits one retry after the native compactor shortens the request history. Keep the native compactor enabled. Disable alternate context plugins that disable it or hide `/compact` from the managed presets.
+
 Both presets run with `danger-full-access` as the operator's OS user and read messages from subscribed Threads. Account wrappers choose the agent's credentials by default; they do not isolate the process. A worker can execute programs by path and read the operator's home directory. For isolation, use a dedicated OS account containing only the agent's credentials.
 
 ## Prerequisites

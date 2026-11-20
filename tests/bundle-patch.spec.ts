@@ -74,3 +74,9 @@ it('defines the router preset the main Session runs under: the worker\'s 5-secon
     '@deepseek-ai/dsh-plugin-manager/tools', '@deepseek-ai/dsh-plugin-market/tools', '@deepseek-ai/dsh-tool-goal',
     '@deepseek-ai/dsh-command-goal', '@deepseek-ai/dsh-tool-workflow', '@deepseek-ai/dsh-workflow-ptc']) expect(names, name).not.toContain(name)
 })
+
+it.each([ROUTER_PRESET, WORKER_PRESET])('keeps context headroom and bounded overflow recovery in %s', async id => {
+  const rows = flat(presetOf(await patched(), id).plugins)
+  const compaction = rows.find(row => row.name === '@deepseek-ai/dsh-compaction-basic')
+  expect(compaction?.config).toMatchObject({ auto: true, thresholdRatio: 0.45, maxOverflowRetries: 1 })
+})

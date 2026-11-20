@@ -84,6 +84,11 @@
             config:
               - id: compaction-basic
                 name: '@deepseek-ai/dsh-compaction-basic'
+                config:
+                  auto: true
+                  # Leave room for gateway token counts above the host estimate.
+                  thresholdRatio: 0.45
+                  maxOverflowRetries: 1
               - id: command-compact
                 name: '@deepseek-ai/dsh-command-compact'
               - id: tool-result-pruner
@@ -186,6 +191,11 @@
             config:
               - id: compaction-basic
                 name: '@deepseek-ai/dsh-compaction-basic'
+                config:
+                  auto: true
+                  # Leave room for gateway token counts above the host estimate.
+                  thresholdRatio: 0.45
+                  maxOverflowRetries: 1
               - id: command-compact
                 name: '@deepseek-ai/dsh-command-compact'
               - id: tool-result-pruner
