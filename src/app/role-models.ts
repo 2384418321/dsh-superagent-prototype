@@ -22,12 +22,14 @@ export async function initializeRoleModel(ctx: Context, agent: Agent, model: Rol
     } }).model
     const previous = native?.current()
     if (!native || !previous || agent.status !== 'idle') return
-    const registered = () => ctx.llm.listProviders().some(provider => provider.id === previous.provider)
-    if (registered()) return
+    const registered = (id: string) => ctx.llm.listProviders().some(provider => provider.id === id)
+    if (registered(previous.provider)) return
     const replacement = await resolveRoleModel(ctx, model)
+    if (ctx.agents.get(agent.id) !== agent || agent.status !== 'idle') return
     const current = native.current()
-    if (agent.status !== 'idle' || current?.provider !== previous.provider || current.model !== previous.model
-      || current.reasoningEffort !== previous.reasoningEffort || registered()) return
+    if (current?.provider !== previous.provider || current.model !== previous.model
+      || current.reasoningEffort !== previous.reasoningEffort || registered(previous.provider)
+      || !registered(replacement.provider)) return
     native.select(replacement)
     await ctx.sessionPersistence.flush()
     return

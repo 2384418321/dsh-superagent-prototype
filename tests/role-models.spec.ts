@@ -15,12 +15,14 @@ async function fixture() {
   ctx.reflect.provide('llm', { resolveCallConfig: resolve, listProviders })
   ctx.reflect.provide('sessionPersistence', { flush })
   const session = Session.create(SessionId('role-model'))
-  const agent = { ctx, session } as Agent
+  const agent = { id: session.id, ctx, session } as Agent
+  const getAgent = vi.fn(() => agent as Agent | undefined)
+  ctx.reflect.provide('agents', { get: getAgent })
   const host: ModelSelectionRef = { get current() { return session.requestHeader()?.config ?? { provider: 'host', model: 'default', reasoningEffort: ReasoningEffortId('high') } }, assembled: undefined }
   installModelSelection(ctx, host)
   const request = () => agentEvents(ctx, agent).waterfall('agent/request', { turn: 1, step: 1, signal: new AbortController().signal }, async () => ({ provider: 'seed', model: 'seed' }))
   const record = (selection: ModelSelection) => { const event = session.append('request/header', { header: { config: selection }, reason: 'initial' }); ctx.emit('session/event', session, event) }
-  return { ctx, agent, host, resolve, flush, request, record, listProviders }
+  return { ctx, agent, host, resolve, flush, request, record, listProviders, getAgent }
 }
 it('keeps prompt variables and initial routing on the role model without saving the host default', async () => {
   const { ctx, agent, request, record, flush } = await fixture()
@@ -97,5 +99,20 @@ it('preserves a concurrent manual selection while resolving a replacement', asyn
   })
   await initializeRoleModel(ctx, agent, { provider: 'worker', model: 'new' })
   expect(resolve).toHaveBeenCalledOnce()
+  expect(select).not.toHaveBeenCalled()
+})
+
+it('does not pick a fallback for an agent replaced during model resolution', async () => {
+  const { ctx, agent, record, resolve, listProviders, getAgent } = await fixture()
+  const old = { provider: 'removed', model: 'old' }
+  record(old)
+  const select = vi.fn()
+  Object.assign(agent, { status: 'idle', model: { current: () => old, select } })
+  listProviders.mockReturnValue([{ id: 'worker', name: 'Worker' }])
+  resolve.mockImplementationOnce(async value => {
+    getAgent.mockReturnValue(undefined)
+    return value
+  })
+  await initializeRoleModel(ctx, agent, { provider: 'worker', model: 'new' })
   expect(select).not.toHaveBeenCalled()
 })
