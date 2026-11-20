@@ -11,7 +11,7 @@ it('marks each Ticket stage by whom it waits for, and an ended Ticket by its out
     { stage: 'working' }, { stage: 'idle' }] as const
   expect(marks.map(stage => { const { label, tone, dot, icon } = ticketMark(t, { ...stage, ended: undefined }); return [label, tone, dot,
     icon] })).toEqual([
-    ['待回答', 'warning', 'warning', 'ask'], ['待验收', 'warning', 'warning', 'review'], ['待处理受阻', 'warning', 'warning', 'blocked'],
+    ['待回答', 'warning', 'warning', 'ask'], ['待复核', 'warning', 'warning', 'review'], ['待处理受阻', 'warning', 'warning', 'blocked'],
     ['待处理失败', 'danger', 'error', 'alert'], ['输入未送达', 'warning', 'warning', 'inbox'], ['排队中', 'neutral', 'idle', 'queue'],
     ['执行中', 'info', 'ongoing', 'running'], ['等待后续消息', 'neutral', 'idle', 'clock']])
   const ended = (['completed', 'merged', 'closed', 'dropped', 'stopped'] as const).map(outcome => ticketMark(t, { stage: 'ended',

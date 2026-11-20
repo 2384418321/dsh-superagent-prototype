@@ -362,7 +362,7 @@ const TEXT = {
   stopHint: ['停止后当前派工结束，Session 和执行目录保留；停止收回授权，之后线程里的消息不再恢复它，要继续需要重新接单。', 'Stopping ends the current Assignment; its Session and directory stay. Stopping withdraws its Mandate: later messages on its Threads do not resume it, and continuing needs a new accept.'],
   idleHint: ['本轮已结束。收到可处理的后续消息后继续。', 'The turn has ended. Work resumes when an eligible follow-up arrives.'],
   'stage.answer': ['待回答', 'Awaiting answer'],
-  'stage.review': ['待验收', 'Awaiting review'],
+  'stage.review': ['待复核', 'Awaiting review'],
   'stage.blocked': ['待处理受阻', 'Blocked'],
   'stage.failed': ['待处理失败', 'Failed'],
   'stage.delivery': ['输入未送达', 'Input undelivered'],
