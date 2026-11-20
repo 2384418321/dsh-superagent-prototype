@@ -24,7 +24,7 @@ it('marks each Ticket stage by whom it waits for, and an ended Ticket by its out
 
 it('marks each Thread stage, Source state and Decision outcome', () => {
   const threads = (['error', 'evaluating', 'queued', 'subscribed', 'dormant', 'unsubscribed'] as const).map(stage => threadMark(t,
-    { stage, pending: 2 }))
+    { stage, pending: 2, evaluating: undefined }))
   expect(threads.map(({ label, dot, icon }) => [label, dot, icon])).toEqual([['轮询失败', 'error', 'alert'], ['评估进行中', 'ongoing', 'running'],
     ['排队 2', 'warning', 'queue'], ['已订阅', 'done', 'inbox'], ['工单已结束', 'idle', 'clock'], ['未订阅', 'idle', 'hash']])
   const sources = (['missing', 'off', 'error', 'setup', 'starting', 'paused', 'ready'] as const).map(state => sourceMark(t, state))

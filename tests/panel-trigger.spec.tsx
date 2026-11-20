@@ -49,6 +49,31 @@ it('filters the Thread list by activity, and unsubscribes from a Thread page aft
   expect(server.requests.some(request => request.path === 'threads/feishu:oc_1:om_root/unsubscribe')).toBe(true)
 })
 
+it.each([
+  ['queued', '等待评估'], ['offered', '等待主会话处理'], ['running', '评估进行中'], ['paused', '评估已暂停'],
+] as const)('displays the %s assessment phase across the list, detail and Trigger', async (phase, label) => {
+  const running = phase === 'running'
+  const item = threadSummary({ stage: running ? 'evaluating' : 'queued', evaluating: {
+    id: 'assessment', phase, triggers: 1, strength: 'inferred', startedAt: '2026-09-23T00:00:00Z',
+    deadline: '2026-09-23T01:00:00Z',
+  } })
+  server.threads = [item]
+  server.threadPages = () => ({ ...item, tickets: [], correlated: [], decisions: [], earlier: null, context: [],
+    timeline: [trigger('pending', item.lastAt, {
+      disposition: { assessmentPhase: phase, evaluating: running, queued: phase === 'queued' },
+    })] })
+  at({ page: 'trigger', query: { filter: 'evaluating' } })
+  await mount()
+  expect(document.querySelector('.dt-ticket .dt-stage')?.textContent).toBe(label)
+  expect(document.querySelector('.dt-ticket time')?.textContent).toContain('最近触发')
+  expect(find('评估队列', '.dt-pill').getAttribute('aria-pressed')).toBe('true')
+  await click(item.title)
+  const banner = document.querySelector('.dt-banner')?.textContent ?? ''
+  expect(banner).toContain(label)
+  expect(banner.includes('到期')).toBe(running)
+  expect(document.querySelector('.dt-event .dt-tag')?.textContent).toBe(label)
+})
+
 it('folds consecutive automated messages from one sender on a Thread, showing the newest with its text', async () => {
   const bot = (id: string, at: string) => trigger(id, at, { actor: { source: 'github', id: '' }, human: false,
     text: `CI of PR #42 at abc1234: 3 checks, 0 failed, ${id === 'b3' ? 0 : 1} running.`, preview: `CI ${id}` })

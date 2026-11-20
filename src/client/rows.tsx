@@ -4,7 +4,7 @@ import type { DecisionRow, ThreadFacts, ThreadRow, TicketRow } from './api.ts'
 import { Icon, Tag } from './controls.tsx'
 import { decisionMark, threadMark, ticketMark } from './marks.ts'
 import { usePanel } from './provider.tsx'
-import { actorName, localized, readableMarkers, reasonLabel, valueLabel } from './text.ts'
+import { actorName, fullTime, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
 import { ActionLink, ConfirmButton, LabelValue, SessionButton, StageMark, When } from './widgets.tsx'
 
 export function TicketLine({ ticket, question, onChanged, context }: {
@@ -68,7 +68,9 @@ export function ThreadLine({ thread, ticketId, context }: { thread: ThreadRow; t
         {context && <ContextTag />}
         {thread.pollError ? <span className="dt-line-text dt-error-text">{thread.pollError}</span> : reaches && <LabelValue
           label={t('fanoutTo')} value={reaches} />}
-        <When at={thread.lastAt} />
+        <time dateTime={thread.lastAt} title={fullTime(thread.lastAt, t('lang'))}>
+          {t('threadLatest', { time: when(thread.lastAt, t('lang')) })}
+        </time>
       </div>
     </div>
   </li>

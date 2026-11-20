@@ -180,6 +180,28 @@ const load = { running: 0, queued: 0 }
 const problems = (host: ReturnType<typeof views>, health: Parameters<typeof overview>[1] = {}) =>
   overview(host, health, 'v1', load).problems
 
+it.each([
+  ['queued', {}, 'queued', true],
+  ['offered', { offeredAt: at }, 'queued', false],
+  ['running', { offeredAt: at, delivered: at }, 'evaluating', false],
+  ['running', { delivered: at, drainOwnerSessionId: 'older-main' }, 'evaluating', false],
+  ['paused', { offeredAt: at, delivered: at, pausedAt: at }, 'queued', false],
+] as const)('projects an assessment as %s from its actual delivery state', (phase, timestamps, stage, queued) => {
+  const host = views()
+  const trigger = message('e1', { source: 'feishu', id: 'ou_alice' })
+  const key = 'feishu:oc_1:om_root'
+  store.triggers.save(trigger)
+  store.triggers.saveDisposition(trigger.id, { filtered: { code: 'not_a_member' }, fanout: [], at })
+  store.threads.save({ key, ref: trigger.threads[0]!, createdAt: at, subscriptions: [], correlated: [], pending: [], meta: {},
+    evaluating: { id: 'eval', threadKey: key, triggerIds: [trigger.id], strength: 'inferred', actor: trigger.actor,
+      basis: { via: 'followup' }, policyVersion: 'v1', startedAt: at, deadline: at, ...timestamps } })
+  const view = snapshot(host)
+  expect(threadSummary(view, store.threads.get(key)!)).toMatchObject({ stage, evaluating: { phase } })
+  expect(triggerView(view, trigger)).toMatchObject({ actions: { requeue: false },
+    disposition: { assessmentPhase: phase, queued, evaluating: phase === 'running' } })
+  expect(overview(host, {}, 'v1', load).flow.evaluating).toBe(phase === 'running' ? 1 : 0)
+})
+
 it('lists an Eval past its deadline, and as dsh-superagent\'s own errors only parts no Source or Policy sync reports', () => {
   const host = views()
   const evaluating = { id: 'e1', threadKey: 'github:1', triggerIds: ['t1'], strength: 'explicit' as const, actor: { source: 'github',

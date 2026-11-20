@@ -24,7 +24,20 @@ export function ticketMark(t: T, ticket: TicketStage & Pick<TicketSummary, 'ende
 export const reportDot = (report: string | undefined): DotState => report === 'failed' ? 'error'
   : report === 'blocked' || report === 'waiting' ? 'warning' : report === 'ready' ? 'done' : 'ongoing'
 
-const THREAD_MARKS: Record<ThreadRow['stage'], Omit<Mark, 'label' | 'tone'> & { label: DshSuperagentKey }> = {
+type LocalizedMark = Omit<Mark, 'label'> & { label: DshSuperagentKey }
+type AssessmentPhase = NonNullable<ThreadRow['evaluating']>['phase']
+const ASSESSMENT_MARKS: Record<AssessmentPhase, LocalizedMark> = {
+  queued: { dot: 'warning', icon: 'queue', tone: 'info', label: 'threadAwaitingAssessment' },
+  offered: { dot: 'warning', icon: 'clock', tone: 'info', label: 'threadAwaitingMain' },
+  running: { dot: 'ongoing', icon: 'running', tone: 'info', label: 'threadEvaluating' },
+  paused: { dot: 'warning', icon: 'pause', tone: 'warning', label: 'threadAssessmentPaused' },
+}
+export function assessmentMark(t: T, phase: AssessmentPhase): Mark {
+  const { label, ...mark } = ASSESSMENT_MARKS[phase]
+  return { ...mark, label: t(label) }
+}
+
+const THREAD_MARKS: Record<ThreadRow['stage'], Omit<LocalizedMark, 'tone'>> = {
   error: { dot: 'error', icon: 'alert', label: 'threadPollFailed' },
   evaluating: { dot: 'ongoing', icon: 'running', label: 'threadEvaluating' },
   queued: { dot: 'warning', icon: 'queue', label: 'threadQueued' },
@@ -32,7 +45,8 @@ const THREAD_MARKS: Record<ThreadRow['stage'], Omit<Mark, 'label' | 'tone'> & { 
   dormant: { dot: 'idle', icon: 'clock', label: 'threadDormantShort' },
   unsubscribed: { dot: 'idle', icon: 'hash', label: 'threadUnsubscribed' },
 }
-export function threadMark(t: T, thread: Pick<ThreadRow, 'stage' | 'pending'>): Omit<Mark, 'tone'> {
+export function threadMark(t: T, thread: Pick<ThreadRow, 'stage' | 'pending' | 'evaluating'>): Omit<Mark, 'tone'> {
+  if (thread.stage !== 'error' && thread.evaluating?.phase) return assessmentMark(t, thread.evaluating.phase)
   const { dot, icon, label } = THREAD_MARKS[thread.stage]
   return { dot, icon, label: t(label, { count: thread.pending }) }
 }

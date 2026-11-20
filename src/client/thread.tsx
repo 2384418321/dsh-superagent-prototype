@@ -2,7 +2,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { ApiError, usePoll, type ThreadPageView, type TriggerRow } from './api.ts'
 import { Button, DisclosureRow, Icon, Tag } from './controls.tsx'
-import { decisionMark } from './marks.ts'
+import { assessmentMark, decisionMark } from './marks.ts'
 import { useAction, usePanel } from './provider.tsx'
 import { DecisionLine, Earlier, TicketLine, automatedRuns } from './rows.tsx'
 import { actorName, errorText, readableMarkers, reasonLabel, valueLabel, when, type T } from './text.ts'
@@ -12,7 +12,10 @@ import { ActionLink, ClampText, ConfirmButton, Hint, LoadState, PageHead, Sectio
 function triggerTags(t: T, trigger: TriggerRow, subscribed?: Set<string>): ReactNode {
   const d = trigger.disposition
   const tags: ReactNode[] = []
-  if (d.queued) tags.push(<Tag key="q" tone="info">{t('dispositionQueued')}</Tag>)
+  if (d.assessmentPhase) {
+    const { tone, label } = assessmentMark(t, d.assessmentPhase)
+    tags.push(<Tag key="e" tone={tone}>{label}</Tag>)
+  } else if (d.queued) tags.push(<Tag key="q" tone="info">{t('dispositionQueued')}</Tag>)
   else if (d.evaluating) tags.push(<Tag key="e" tone="info">{t('dispositionEvaluating')}</Tag>)
   else if (d.filtered) tags.push(<Tag key="f" tone="neutral">{t('tagFiltered', { reason: reasonLabel(t, d.filtered) })}</Tag>)
   else if (d.decision && d.decision.outcome !== 'ignore') {
@@ -133,8 +136,9 @@ export function ThreadPage({ id, target }: { id: string; target?: string }) {
         { time: when(data.lastAt, t('lang')) })}</span><span>{t('threadCreated', { time: when(data.createdAt, t('lang')) })}</span>
     </div>
     {data.evaluating && <p className="dt-banner">
-      {t('evaluatingBanner', { count: data.evaluating.triggers, strength: valueLabel(t, 'strength', data.evaluating.strength),
-        deadline: when(data.evaluating.deadline, t('lang')) })}
+      {data.evaluating.phase === 'running' ? t('evaluatingBanner', { count: data.evaluating.triggers,
+        strength: valueLabel(t, 'strength', data.evaluating.strength), deadline: when(data.evaluating.deadline, t('lang')) })
+        : assessmentMark(t, data.evaluating.phase ?? 'queued').label}
     </p>}
     {data.pollError && <p className="dt-error dt-clamp">{t('pollFailed', { error: data.pollError })}</p>}
     {data.tickets.length > 0 && <Section title={t('subscribedTickets')} count={data.tickets.length}>

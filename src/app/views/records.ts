@@ -76,6 +76,11 @@ export const awaitingEval = ({ store, owners }: { store: Pick<Store, 'triggers'>
     const trigger = store.triggers.get(id)
     return !trigger || !owners(trigger).length
   })
+export function assessmentPhase(evaluation: NonNullable<Thread['evaluating']>) {
+  if (evaluation.pausedAt) return 'paused' as const
+  if (evaluation.delivered) return 'running' as const
+  return evaluation.offeredAt ? 'offered' as const : 'queued' as const
+}
 /**
  * A trigger with where it went: queued for Eval, the Decision that consumed it, the Tickets it fanned out to, `delivered`
  * when it is a person's follow-up that a ticket's worker decides without an Eval, and the Tickets that handed it back for
@@ -90,16 +95,17 @@ export function triggerView(view: Snapshot, trigger: Trigger, threadDecisions?: 
   const decision = disposition?.decisionId ? store.decisions.get(disposition.decisionId)
     : (threadDecisions ?? (home ? store.decisions.byThread(home.key) : [])).filter(item => item.triggerIds.includes(trigger.id)).at(-1)
   const delivered = view.owners(trigger).length > 0
-  const queued = !!home?.pending.includes(trigger.id) && !delivered
-  const evaluating = !!home?.evaluating?.triggerIds.includes(trigger.id)
+  const assessment = home?.evaluating?.triggerIds.includes(trigger.id) ? assessmentPhase(home.evaluating) : undefined
+  const queued = !delivered && (assessment === 'queued' || !!home?.pending.includes(trigger.id))
   const decided = !!disposition?.acked?.length || (!!decision && settled(decision))
   const unjudged = !!disposition?.filtered || decision?.kind === 'unavailable' || delivered || (!!disposition?.fanout.length && !decided)
     || (!!decision && !decided)
-  const requeue = trigger.human && !queued && !evaluating && unjudged
+  const requeue = trigger.human && !queued && !assessment && unjudged
   return { id: trigger.id, source: trigger.source, actor: view.actor(trigger.actor, trigger.human), human: trigger.human, at: trigger.at,
     text: plain(readable(trigger.text), true),
     preview: preview(trigger.text), url: trigger.url, threads: trigger.threads.map(threadKey), actions: { requeue },
-    disposition: { queued, evaluating, delivered, filtered: disposition?.filtered, fanout: disposition?.fanout ?? [],
+    disposition: { queued, evaluating: assessment === 'running', ...(assessment ? { assessmentPhase: assessment } : {}),
+      delivered, filtered: disposition?.filtered, fanout: disposition?.fanout ?? [],
       handbacks: (disposition?.handbacks ?? []).map(item => ({ ...item,
         title: store.tickets.get(item.ticketId)?.title ?? item.ticketId })),
       decision: decision ? { id: decision.id, outcome: outcomeOf(decision), reason: decision.reason, ticketId: decision.ticketId }
@@ -175,10 +181,10 @@ function latestOnThread(view: Snapshot, thread: Thread) {
 }
 /** Thread lifecycle stage in priority order: poll error, evaluating, queued, subscribed by open ticket, dormant (ended tickets only), or unsubscribed. */
 export type ThreadStage = 'error' | 'evaluating' | 'queued' | 'subscribed' | 'dormant' | 'unsubscribed'
-function threadStage(thread: Thread, pending: number, tickets: { state: string }[]): ThreadStage {
+function threadStage(thread: Thread, phase: ReturnType<typeof assessmentPhase> | undefined, pending: number, tickets: { state: string }[]): ThreadStage {
   if (attribute(thread.meta.pollError)) return 'error'
-  if (thread.evaluating) return 'evaluating'
-  if (pending) return 'queued'
+  if (phase === 'running') return 'evaluating'
+  if (phase || pending) return 'queued'
   if (tickets.some(ticket => ticket.state === 'open')) return 'subscribed'
   return tickets.length ? 'dormant' : 'unsubscribed'
 }
@@ -189,10 +195,13 @@ export function threadSummary(view: Snapshot, thread: Thread) {
     return { id, title: ticket?.title ?? id, state: !ticket ? 'unknown' : liveTicket(ticket) ? 'open' : 'ended' }
   })
   const pending = awaitingEval(view, thread).length
-  return { key: thread.key, source: thread.ref.source, title: threadTitle(store, thread), stage: threadStage(thread, pending, tickets),
+  const evaluation = thread.evaluating
+  const evaluating = evaluation && { id: evaluation.id, phase: assessmentPhase(evaluation), strength: evaluation.strength,
+    triggers: evaluation.triggerIds.length, startedAt: evaluation.startedAt, deadline: evaluation.deadline }
+  return { key: thread.key, source: thread.ref.source, title: threadTitle(store, thread), stage: threadStage(thread, evaluating?.phase, pending, tickets),
     latest: latestOnThread(view, thread), lastAt: thread.lastAt ?? thread.createdAt, createdAt: thread.createdAt,
     subscriptions: thread.subscriptions.length, tickets,
-    evaluating: thread.evaluating ? { id: thread.evaluating.id, strength: thread.evaluating.strength, triggers: thread.evaluating.triggerIds.length, startedAt: thread.evaluating.startedAt, deadline: thread.evaluating.deadline } : undefined,
+    evaluating,
     pending, pollError: attribute(thread.meta.pollError), url: threadUrl(store, thread),
     facts: (thread.meta.facts ?? {}) as ThreadFacts }
 }
