@@ -27,6 +27,8 @@ describe('ticketStage', () => {
     ['no Assignment', ticket({ assignments: [] }), { stage: 'working', action: 'queued' }],
     ['a pending Assignment', ticket({ assignments: [reported('failed', { state: 'ended' }), assignment({ state: 'pending' })] }), { stage: 'working', action: 'queued' }],
     ['a waiting Report', ticket({ assignments: [reported('waiting')] }), { stage: 'idle' }],
+    ['a waiting Report followed by a delivered Input', ticket({ assignments: [{ ...reportedAt('waiting'), deliveredAt: 'later' }] }), { stage: 'working' }],
+    ['a new waiting Report after a delivered Input', ticket({ assignments: [{ ...reportedAt('waiting'), deliveredAt: 'before' }] }), { stage: 'idle' }],
     ['an ended Assignment', ticket({ assignments: [assignment({ state: 'ended' })] }), { stage: 'idle' }],
     ['a running Assignment', ticket(), { stage: 'working' }],
     ['a progress Report', ticket({ assignments: [reported('progress')] }), { stage: 'working' }],

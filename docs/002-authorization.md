@@ -146,7 +146,7 @@ If revalidation fails, the Ticket stays ended and takes none of its waiting mess
 
 ## When Eval does not finish
 
-The time limit starts on the first explicit assessment read (`orchestrator_eval` or `orchestrator_eval_read`), not when a notification enters the inbox or Session history. Repeated reads do not renew the deadline. Candidates waiting for actual assessment do not expire; one candidate holds the delivery slot until decided or released. On restart, an unopened assessment is recovered under the same Eval and Trigger, reusing a still-pending notice instead of creating another task.
+The decision deadline starts on the first explicit assessment read (`orchestrator_eval` or `orchestrator_eval_read`). Repeated reads do not renew it. Once sent to the main Session, an unopened card can hold the delivery slot for at most three assessment timeouts. Candidates still waiting for delivery do not expire. On restart, an unopened assessment is recovered under the same Eval and Trigger, reusing a still-pending notice instead of creating another task.
 
 An expired Eval queues its Triggers for another attempt. After two consecutive retries, the third expiry records `unavailable`. An assessment failure also records `unavailable`; a later Trigger can start a new Eval. A Policy change or a decision made against an outdated Policy records `unavailable` and immediately queues the batch under the current version.
 

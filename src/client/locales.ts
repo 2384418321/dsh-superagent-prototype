@@ -343,6 +343,7 @@ const TEXT = {
   executorModel: ['执行器模型', 'Executor model'],
   executorModelHint: ['保存后用于新建的执行器 Session，已有 Session 保持原选择。留空继承 DSH 默认值。', 'Applies to new Executor Sessions; existing Sessions keep their choice. Leave empty to inherit the DSH default.'],
   assignmentReportShort: ['报告：{state}', 'Report: {state}'],
+  lastWorkerReport: ['上次回执：{text}', 'Last worker report: {text}'],
   assignmentSpan: ['{from} → {to}', '{from} → {to}'],
   inputUndelivered: ['未送达', 'Undelivered'],
   mandateDetails: ['授权详情', 'Mandate details'],

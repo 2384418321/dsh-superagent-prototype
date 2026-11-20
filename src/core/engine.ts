@@ -67,7 +67,7 @@ export class Engine {
   // The clock
 
   /**
-   * Requeues overdue Evals up to `REQUEUES` times before recording `unavailable` (undelivered Evals never expire), starts the
+   * Requeues overdue Evals up to `REQUEUES` times before recording `unavailable` (Evals that are neither sent nor opened do not expire), starts the
    * Evals of Threads whose queued Triggers wait, and resumes ended tickets a person's message reached while processing was
    * paused. While processing is paused, nothing expires: each Eval in progress notes when the pause began, and its deadline
    * moves forward by the pause's length once processing resumes. Each Eval and each ticket update takes one transaction.
@@ -136,7 +136,9 @@ export class Engine {
 
   // People, through the panel or the main Session
 
-  /** The main Session explicitly opens an assessment: its deadline counts from the first read. */
+  /** The candidate was sent and cannot occupy the assessment slot indefinitely. */
+  candidateOffered(evalId: string): void { this.repo.atomic(() => { this.evals.offered(evalId, this.options.policy()) }) }
+  /** The main Session explicitly opens an assessment: its decision deadline counts from the first read. */
   candidateRead(evalId: string): void { this.repo.atomic(() => { this.evals.readStarted(evalId, this.options.policy()) }) }
   /**
    * Queue a stored Trigger for a fresh Eval, such as a person's replay; returns false while an Eval holds it.
@@ -260,7 +262,7 @@ export class Engine {
 /** What Sources ask and tell the Engine. */
 export type EngineForSources = Pick<Engine, 'receive' | 'bindThread' | 'threadClosed'>
 /** What the main Session asks of the Engine. */
-export type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateRead' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'>
+export type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateOffered' | 'candidateRead' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'>
 /** What people ask of the Engine, through the panel or the main Session. */
 export type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'reevaluate' | 'unsubscribe' | 'dismiss'>
 /** What Settings tells the Engine. */

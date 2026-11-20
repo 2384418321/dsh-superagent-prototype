@@ -361,6 +361,34 @@ it('lists each ticket with the Threads it subscribes to, as their Sources descri
   expect(line().threads.find(thread => thread.key === 'github:42')!.facts).toEqual({ number: { value: '#42' } })
 })
 
+it('treats a trimmed string null as an explicit attention clear without changing omitted questions', async () => {
+  const { sessionId, ticket } = await acceptedTicket()
+  const report = (summary: string, human_action?: string | null) => runTool(sessionId, 'orchestrator_report', {
+    state: 'progress', summary, ...(human_action === undefined ? {} : { human_action }),
+  })
+  const attention = () => runtime.store.tickets.get(ticket.id)?.attention
+  await report('Needs a decision', 'Desktop too?')
+  expect(attention()).toMatchObject({ question: 'Desktop too?' })
+  await report('More internal progress')
+  expect(attention()).toMatchObject({ question: 'Desktop too?' })
+  expect(await report('Scope is resolved', '  null\n')).toMatchObject({ notification: 'internal_only' })
+  expect(attention()).toBeUndefined()
+  await report('Another question', 'Can it wait?')
+  expect(attention()).toMatchObject({ question: 'Can it wait?' })
+  await report('Question resolved', null)
+  expect(attention()).toBeUndefined()
+})
+
+it('previews the last worker report only while the ticket is waiting', async () => {
+  const { sessionId, ticket } = await acceptedTicket()
+  runtime.engine.report(ticket.id, { state: 'waiting', summary: '**Waiting for an isolated device.**\n<p>Tests are saved.</p>' })
+  const row = () => ticketList(viewsOf(runtime), 'open', 0, 20).items.find(item => item.id === ticket.id)!
+  expect(row()).toMatchObject({ stage: 'idle', note: { text: 'Waiting for an isolated device. Tests are saved.', error: false } })
+  await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'Device assigned' })
+  expect(row()).toMatchObject({ stage: 'working' })
+  expect(row()).not.toHaveProperty('note')
+})
+
 it('shows a message that carries JSON, with or without a label, as its label and values on lines', () => {
   const text = `GitHub PR #7 CI: ${JSON.stringify({ head: 'abc1234', checks: [{ name: 'e2e', status: 'completed', conclusion: 'failure' }, { name: 'lint', status: 'in_progress', conclusion: null }], statuses: [] })}`
   expect(readable(text)).toBe('GitHub PR #7 CI\nhead: abc1234\nchecks:\n- e2e · completed · failure\n- lint · in_progress\nstatuses: ')
@@ -633,6 +661,26 @@ it('restores an undelivered candidate after a restart even when its enqueue effe
   const next = await restart()
   expect(next.effects.pending('assessment', evaluation.id)).toBe(true)
   await next.ready
+})
+
+it('delivers the next candidate when a sent assessment stays unopened past its deadline', async () => {
+  const first = feishu('51', '修复第一个问题', { mentions: [] })
+  const next = feishu('52', '修复第二个问题', { mentions: [] })
+  const delivered = () => relays(runtime.masterId).filter(item => item.kind === 'candidate').map(item => item.trigger_id)
+
+  await receive(first)
+  await receive(next)
+  expect(delivered()).toEqual([first.id])
+
+  const thread = runtime.store.threads.get(`feishu:${CHAT}:om_51`)!
+  expect(thread.evaluating?.offeredAt).toBeDefined()
+  expect(thread.evaluating?.delivered).toBeUndefined()
+  runtime.store.threads.save({ ...thread, evaluating: { ...thread.evaluating!, deadline: '2000-01-01T00:00:00.000Z' } })
+  runtime.engine.evaluateDue()
+  await runtime.idle()
+
+  expect(delivered()).toEqual([first.id, next.id])
+  expect(runtime.store.tickets.list()).toEqual([])
 })
 
 it('recovers a consumed but unopened assessment once, reuses a pending notice, and preserves a claimed deadline on restart', async () => {

@@ -40,6 +40,17 @@ it('lists Tickets under Execution by who they wait on, with the Executor state a
   expect(server.settings).toMatchObject({ paused: true, executor: { maxWorkers: 4 } })
 })
 
+it('shows a waiting Ticket’s last report on its row', async () => {
+  server.tickets.open = [
+    ticketSummary({ note: { text: '等待独立设备负责人', error: false } }, { stage: 'idle' }),
+    ticketSummary({ id: 't2', note: { text: '旧回执', error: false } }),
+  ]
+  at({ page: 'execution' })
+  await mount()
+  expect(text()).toContain('上次回执：等待独立设备负责人')
+  expect(text()).not.toContain('旧回执')
+})
+
 it('stops an open Ticket from its page after confirmation', async () => {
   await mount()
   await click('修复回归')
