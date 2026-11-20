@@ -13,7 +13,7 @@ const TEXT = {
   confirm: ['确定', 'Confirm'],
   loading: ['正在读取…', 'Loading…'],
   loadMore: ['加载更多', 'Load more'],
-  offline: ['无法连接到 dsh-superagent 服务。请确认它正在运行（dsh-superagent status），然后重试。', 'Cannot reach the dsh-superagent service. Check that it is running (dsh-superagent status), then retry.'],
+  offline: ['无法连接到 Superagent。请在 DeepSeek Harness 客户端确认插件已启用，然后重试。', 'Cannot reach Superagent. Check that the plugin is enabled in the DeepSeek Harness desktop client and try again.'],
   serverError: ['dsh-superagent 服务内部错误（{status}），请查看运行日志后重试。', 'dsh-superagent service error ({status}). Check the log, then retry.'],
   requestFailed: ['请求失败（{status}）。', 'Request failed ({status}).'],
   empty: ['—', '—'],

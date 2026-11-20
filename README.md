@@ -4,7 +4,7 @@
 >
 > We have adapted it for publication, so it is not identical to our internal version or the implementation described in *Exploring Super-agent Design: Towards a More Autonomous Agent System*. Some designs discussed in the article are directions for future development and are not implemented in this prototype.
 
-dsh-superagent is a proactive coding agent for one GitHub repository, packaged as a bundle for [DeepSeek Harness](https://www.deepseek.com/en/harness/). It listens to GitHub and, optionally, Feishu. When someone allowed asks the agent for work, it opens a work item, works on it in its own agent session and directory, and answers in the original conversation, for example with a pull request. A web panel shows what needs a person.
+dsh-superagent is a proactive coding agent for one GitHub repository, packaged as a bundle for [DeepSeek Harness](https://www.deepseek.com/en/harness/). It listens to GitHub and, optionally, Feishu. When someone allowed asks the agent for work, it opens a work item, works on it in its own agent session and directory, and answers in the original conversation, for example with a pull request. The Superagent panel in the DeepSeek Harness desktop client shows what needs a person.
 
 It is also a way of working with an agent: **take as little human attention as possible, and give as much value as possible.** An agent that can act for a whole team can also waste a whole team's attention, so it acts only when asked or when a rule the team wrote allows it, and speaks only when someone must act or can use a result. [docs/000-philosophy.md](docs/000-philosophy.md) explains the principle and what it asks of the operator.
 
@@ -18,13 +18,15 @@ It is also a way of working with an agent: **take as little human attention as p
 
 评估和执行模型默认继承当前客户端的默认模型，也可在面板分别选择客户端已有的提供商、模型和思考强度。已有会话保留自己的模型选择；更改默认值不会自动改写它们。
 
-本插件运行在客户端宿主进程中，完成 GitHub 设置后会修改该进程的 `PATH` 和 Git 配置环境变量，影响同一客户端的其他会话；需要独立环境时使用专用 profile 或单独的系统账号。不同电脑需各自配置 GitHub 凭据、目标仓库、工作目录与模型；安装插件不会自动复制这些配置或会话数据。
+本插件运行在客户端宿主进程中，完成 GitHub 设置后会修改该进程的 `PATH` 和 Git 配置环境变量，影响同一客户端的其他会话；需要独立环境时使用单独的系统账号。不同电脑需各自配置 GitHub 凭据、目标仓库、工作目录与模型；安装插件不会自动复制这些配置或会话数据。
 
 Setup has many steps, so an agent does it with you. Ask your coding agent:
 
 > Read SETUP.md in this repository and set up dsh-superagent with me.
 
 It asks one short question at a time, shows the full plan once, and then installs and configures everything. [SETUP.md](SETUP.md) is what it follows.
+
+主会话空闲时，在客户端 Superagent 面板点击「更换主会话」。执行器和后台任务继续运行，旧主会话保留。
 
 ## Documentation
 

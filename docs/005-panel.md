@@ -1,6 +1,6 @@
 # 005 Panel
 
-Open **Superagent** in the DeepSeek Harness Web sidebar to supervise the agent. The panel prioritizes work that needs a person, then system health and history. This document builds on [000 Philosophy](000-philosophy.md) through [004 Prompts](004-prompts.md).
+Open **Superagent** in the DeepSeek Harness desktop sidebar to supervise the agent. The panel prioritizes work that needs a person, then system health and history. This document builds on [000 Philosophy](000-philosophy.md) through [004 Prompts](004-prompts.md).
 
 ## Three questions
 
@@ -22,6 +22,10 @@ The tabs follow the workflow: **Overview**, **Source**, **Trigger**, **Eval**, *
 | Eval | Decisions with their reason and matched rules |
 | Execution | Executor state, Pause processing, and Tickets filtered by Open, Pending, Working, Waiting for a Trigger or Ended. Ticket details show actions, authorization, waiting Inputs, Subscriptions and Assignments |
 | Settings | Sources, Eval, Execution, Prompts and Deployment. Each group includes its save history |
+
+### Change the main Session
+
+Choose **Change main Session** in the panel header while the current main Session is idle. Executors, their assignments and background jobs continue during the switch. The old Session remains available and the new Session receives the handoff before later automatic messages. If the main Session has an unfinished assessment or unread user input, finish that work in the old Session before switching.
 
 ### Reading individual records
 

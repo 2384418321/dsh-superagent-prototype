@@ -28,7 +28,7 @@ function context() {
     inject: vi.fn((_services: string[], callback: (child: unknown) => void) => { callback({ effect: (effect: () => unknown) => effect(), settings: { configure } }) }),
     effect: vi.fn(),
     fiber: { restart: vi.fn(async () => {}) },
-    get: vi.fn((name: string) => name === 'settings' ? { describe } : undefined),
+    get: vi.fn((name: string) => name === 'profileContext' ? { name: 'desktop' } : name === 'settings' ? { describe } : undefined),
     logger: { info: vi.fn(), error: vi.fn() },
   }
   return { ctx, handlers, configure, describe }

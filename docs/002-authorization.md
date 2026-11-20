@@ -150,6 +150,6 @@ The decision deadline starts on the first explicit assessment read (`orchestrato
 
 An expired Eval queues its Triggers for another attempt. After two consecutive retries, the third expiry records `unavailable`. An assessment failure also records `unavailable`; a later Trigger can start a new Eval. A Policy change or a decision made against an outdated Policy records `unavailable` and immediately queues the batch under the current version.
 
-The `evals` health entry reports unresolved unavailable Decisions from the last 24 hours. `scripts/dsh-superagent status` includes that error.
+The `evals` health entry reports unresolved unavailable Decisions from the last 24 hours. The desktop panel displays that error under system health.
 
 The panel asks for human attention only when the unavailable Decision is less than 24 hours old, is still the latest Decision on its Thread, has not been dismissed, and the Thread is neither queued nor evaluating. A person can evaluate the Trigger again or dismiss the problem.

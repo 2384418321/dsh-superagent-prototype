@@ -12,7 +12,9 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
 type Entry = { options: { name: string; id?: string; key?: string; order?: number; locale?: string; label?: () => string }; component: ComponentType<Record<string, unknown>> }
 const t = ((key: keyof typeof zh) => zh[key] ?? key) as never
-function fixture(listed: string[]) {
+function fixture(listed: string[], view = 'dsh-app://app/', native = true) {
+  vi.stubGlobal('location', new URL(view))
+  vi.stubGlobal('dshDesktop', native ? { fileActions: { save: vi.fn() } } : undefined)
   const entries: Entry[] = []
   const dictionaries: Record<string, unknown> = {}
   const ctx = {
@@ -57,6 +59,16 @@ it('registers a localized main panel, sidebar entry and Plugin Manager row page,
   expect(main.options).toMatchObject({ key: 'dsh-superagent', locale: 'dshSuperagent' })
   expect(nav.options).toMatchObject({ id: 'dsh-superagent', order: 10, locale: 'dshSuperagent' })
   expect(nav.options.label?.()).toBe('Superagent')
+})
+
+it.each([
+  ['http://127.0.0.1:3082/', false],
+  ['http://127.0.0.1:3082/', true],
+  ['dsh-app://app/', false],
+] as const)('does not register a panel at %s with native bridge %s', (url, native) => {
+  const { entries, dictionaries } = fixture([], url, native)
+  expect(entries).toEqual([])
+  expect(dictionaries).toEqual({})
 })
 
 it('opens a listed Session through the workspace from the main panel', async () => {
