@@ -7,7 +7,7 @@ import { SettingsSchema } from '../src/policy.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
 import { githubKind } from '../src/sources/github.ts'
-import { snapshot, threadSummary, ticketSummary, triggerView } from '../src/app/views/records.ts'
+import { snapshot, threadSummary, ticketLine, ticketSummary, triggerView } from '../src/app/views/records.ts'
 import { basisFacts, ticketDetail } from '../src/app/views/tickets.ts'
 import { threadDetail } from '../src/app/views/threads.ts'
 import { droppedReplies, sourcesStatus } from '../src/app/views/sources.ts'
@@ -131,6 +131,31 @@ it('follows the Ticket\'s stage: a blocked Ticket a person answered since is wor
   expect(answered).toMatchObject({ stage: 'working', actions: { retry: false } })
   expect(answered).not.toHaveProperty('note')
   expect(ticketDetail(host, 't1')!.assignments[0]).not.toHaveProperty('turnEndedAt')
+})
+
+it('projects pending human follow-ups and observed PR outcomes without changing the underlying history', () => {
+  const host = views()
+  live('t1')
+  const thread = { key: 'github:42', ref: { source: 'github', id: '42' }, createdAt: at, subscriptions: ['t1'],
+    correlated: [], pending: [], meta: { facts: { number: { value: '#42' }, ci: { value: 'Passed' }, autoMerge: { value: 'on' } } } }
+  store.threads.save(thread)
+  store.tickets.save({ ...store.tickets.get('t1')!, follows: [{ thread: thread.key, own: true, closed: { outcome: 'merged', at } }],
+    undelivered: ['human', 'context', 'bot', 'recovery'], inputs: [
+      { id: 'human', kind: 'trigger', triggerId: 'e1', human: true, at },
+      { id: 'context', kind: 'trigger', triggerId: 'e2', human: true, context: true, at },
+      { id: 'bot', kind: 'trigger', triggerId: 'e3', at },
+      { id: 'recovery', kind: 'text', text: 'Recovery context', at },
+    ] })
+  const ticket = store.tickets.get('t1')!
+  const line = ticketLine(snapshot(host), ticket)
+  expect(line).toMatchObject({ undelivered: 4, pendingHumanInputs: 1 })
+  expect(line.threads[0]?.facts).toEqual({ number: { value: '#42' }, lifecycle: { value: { zh: '已合并', en: 'Merged' } } })
+  const detail = ticketDetail(host, 't1')!
+  expect(detail.threads[0]?.facts).toEqual(line.threads[0]?.facts)
+  expect(detail.inputs.filter(input => input.humanFollowup).map(input => input.id)).toEqual(['human'])
+  expect(store.threads.get(thread.key)?.meta.facts).toEqual(thread.meta.facts)
+  store.tickets.save({ ...ticket, follows: [{ thread: thread.key, own: true }] })
+  expect(ticketLine(snapshot(host), store.tickets.get('t1')!).threads[0]?.facts).toEqual(thread.meta.facts)
 })
 
 it('does not show a follow-up that reached a ticket as waiting for an Eval, though an older version queued it', () => {

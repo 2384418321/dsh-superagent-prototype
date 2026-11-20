@@ -3,7 +3,7 @@ import { liveTicket, threadKey, ticketStage, type AcceptMode, type AdmissionCell
   type TicketStage } from '../../core/index.ts'
 import { workerSessionId } from '../../executor/dsh.ts'
 import type { Store } from '../store.ts'
-import { channelLink, decisionView, newestFirst, page, snapshot, threadSummary, ticketLine, type Snapshot,
+import { channelLink, decisionView, humanFollowup, newestFirst, page, snapshot, threadSummary, ticketLine, ticketThreadFacts, type Snapshot,
   type ViewHost } from './records.ts'
 import { markdown, preview } from './text.ts'
 
@@ -67,7 +67,8 @@ export function ticketDetail(host: ViewHost, id: string) {
       preview: preview(trigger.text), thread: threadKey(trigger.threads[0]!),
       ...handback ? { handback: { reason: handback.reason, at: handback.at } } : {} }
     const text = (value.kind === 'text' || value.kind === 'note') && value.text ? { text: markdown(value.text) } : {}
-    return { ...value, ...text, delivered: !ticket.undelivered.includes(value.id), ...shown ? { trigger: shown } : {} }
+    return { ...value, ...text, delivered: !ticket.undelivered.includes(value.id), ...shown ? { trigger: shown } : {},
+      ...humanFollowup(value) ? { humanFollowup: true as const } : {} }
   }
   // Pass `human = false` for bot-originated mandates so the Source kind still labels the actor as a bot if removed from the policy list.
   const human = ticket.mandate.basis.via !== 'bot'
@@ -81,7 +82,10 @@ export function ticketDetail(host: ViewHost, id: string) {
         ? { turnEndedAt: assignment.report.at } : {} })),
     inputs: ticket.inputs.slice().reverse().map(input),
     // Threads followed for context only (e.g., related issues) grant no authority and are marked with `context: true`.
-    threads: view.threadsOf(id).map(thread => ({ ...threadSummary(view, thread),
-      ...thread.context?.includes(id) ? { context: true as const } : {} })) }
+    threads: view.threadsOf(id).map(thread => {
+      const line = threadSummary(view, thread)
+      return { ...line, facts: ticketThreadFacts(ticket, thread.key, line.facts),
+        ...thread.context?.includes(id) ? { context: true as const } : {} }
+    }) }
 }
 export type TicketDetailView = NonNullable<ReturnType<typeof ticketDetail>>

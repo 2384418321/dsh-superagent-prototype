@@ -13,9 +13,7 @@ export function TicketLine({ ticket, question, onChanged, context }: {
   const { t, call, navigate } = usePanel()
   const status = ticketMark(t, ticket)
   const after = async (request: Promise<unknown>) => { await request; await onChanged?.() }
-  const note = question && ticket.note && { ...ticket.note, text: readableMarkers(t, ticket.note.text) }
-  const waitingReport = ticket.stage === 'idle' && ticket.note
-    ? t('lastWorkerReport', { text: readableMarkers(t, ticket.note.text) }) : undefined
+  const note = question && ticket.stage === 'person' && ticket.note && { ...ticket.note, text: readableMarkers(t, ticket.note.text) }
   const answer = ticket.reply && ticket.stage === 'person' && ticket.action === 'answer' ? ticket.reply : undefined
   return <li className="dt-row dt-link dt-ticket" data-state={question ? status.dot : undefined}>
     <div className="dt-ticket-stage"><StageMark state={status.dot} icon={status.icon} label={status.label} /></div>
@@ -25,14 +23,11 @@ export function TicketLine({ ticket, question, onChanged, context }: {
       <div className="dt-row-meta dt-ticket-meta">
         {ticket.threads.map(thread => <ThreadChip key={thread.key} thread={thread} />)}
         {context && <ContextTag />}
-        {ticket.undelivered > 0 && <LabelValue label={t('ticketUndeliveredLabel')} value={ticket.undelivered} />}
+        {ticket.pendingHumanInputs > 0 && <LabelValue label={t('ticketHumanPending')} value={ticket.pendingHumanInputs} />}
         {note ? <span className={note.error ? 'dt-ticket-note dt-ticket-note-error' : 'dt-ticket-note'} title={note.text}>{note.text}</span>
           : <When at={ticket.updatedAt} />}
       </div>
-      {/* Always render the actions container so every Ticket row keeps a uniform three-line height. */}
-      <div className="dt-ticket-actions">
-        {waitingReport && <span className="dt-ticket-note dt-line" title={waitingReport}>{waitingReport}</span>}
-        {onChanged && <>
+      {onChanged && <div className="dt-ticket-actions">
         {answer && <ActionLink href={answer.url} icon="message">{t('answerIn', { source: valueLabel(t, 'source',
           answer.source) })}</ActionLink>}
         {ticket.actions.retry && <ConfirmButton variant="outline" icon="refresh" label={t('retry')} title={t('retryTitle')}
@@ -42,7 +37,7 @@ export function TicketLine({ ticket, question, onChanged, context }: {
         {ticket.actions.stop && <ConfirmButton variant="outline" icon="stop" label={t('stop')} title={t('stopConfirmTitle')}
           message={t('stopConfirm', { title: ticket.title })}
           onConfirm={() => after(call('POST tickets/:id/stop', { id: ticket.id }))} />}
-      </>}</div>
+      </div>}
     </div>
   </li>
 }

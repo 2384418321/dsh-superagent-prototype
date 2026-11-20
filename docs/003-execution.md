@@ -56,9 +56,9 @@ A failed command fails the Ticket and records its output. A retry or a person's 
 
 A Ticket holds a worker slot from the start of a launch, including preparation, or from the delivery that wakes its idle Executor. It also holds the slot throughout an active turn.
 
-The configured concurrency limit applies to these slots, with one extra slot for a person's message or a status request. Such a wake can use the extra slot when normal slots are full, and takes the next free slot before a new launch. New work therefore cannot prevent a person from continuing an existing Ticket.
+The configured concurrency limit applies to these slots, with one extra slot for a person's message or a status request. Such a wake can use the extra slot when normal slots are full, and takes the next free slot before a new launch. A status request can wake the same assignment once per waiting report. When a new Input has already resumed the worker, the status request leaves it alone.
 
-Other Inputs, such as CI results, wait for a normal slot. A launch waits in `working / queued` until a slot is free. Launches run concurrently, so a slow prepare command delays only its own Ticket.
+Other Inputs, such as CI results, wait for a normal slot. The Ticket list counts pending human messages that reach the Ticket directly. Background inputs and the timestamped last report appear in the Ticket detail. A launch waits in `working / queued` until a slot is free. Launches run concurrently, so a slow prepare command delays only its own Ticket.
 
 ### Execution variables
 

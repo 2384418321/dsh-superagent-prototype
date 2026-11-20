@@ -1115,6 +1115,58 @@ describe('ticket commands', () => {
     expect(h.repo.tickets.get(other)).toMatchObject({ ended: { outcome: 'closed' } })
   })
 
+  it('queues one status request per waiting report across pending and delivered inputs', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    const ticket = () => h.repo.tickets.get(ticketId)!
+    h.engine.report(ticketId, { state: 'waiting', summary: 'Awaiting CI' })
+    h.tick(1)
+    expect(h.engine.requestStatus(ticketId)).toBe(true)
+    h.settle()
+    h.tick(1)
+    expect(h.engine.requestStatus(ticketId)).toBe(false)
+    expect(ticket().inputs).toHaveLength(1)
+    expect(ticket().undelivered).toEqual([])
+
+    h.engine.report(ticketId, { state: 'waiting', summary: 'Awaiting review' })
+    h.tick(1)
+    expect(h.engine.requestStatus(ticketId)).toBe(true)
+    h.tick(1)
+    expect(h.engine.requestStatus(ticketId)).toBe(false)
+    expect(ticket().inputs).toHaveLength(2)
+    expect(ticket().undelivered).toEqual([ticket().inputs.at(-1)!.id])
+  })
+
+  it('leaves the worker alone after a new trigger resumes a waiting ticket', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    h.engine.report(ticketId, { state: 'waiting', summary: 'Awaiting response' })
+    h.tick(1)
+    h.engine.receive(trigger('2'))
+    h.settle()
+
+    expect(ticketStage(h.repo.tickets.get(ticketId)!)).toEqual({ stage: 'working' })
+    expect(h.engine.requestStatus(ticketId)).toBe(false)
+    expect(h.repo.tickets.get(ticketId)!.inputs).toHaveLength(1)
+  })
+
+  it('recognizes a status request saved before waiting reports had stable request keys', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    h.engine.report(ticketId, { state: 'waiting', summary: 'Awaiting CI' })
+    h.tick(1)
+    h.engine.requestStatus(ticketId)
+    h.settle()
+    const ticket = h.repo.tickets.get(ticketId)!
+    const request = ticket.inputs[0]!
+    request.id = `status:${ticketId}:${ticket.updatedAt}`
+    h.repo.tickets.save(ticket)
+
+    h.tick(1)
+    expect(h.engine.requestStatus(ticketId)).toBe(false)
+    expect(h.repo.tickets.get(ticketId)!.inputs).toHaveLength(1)
+  })
+
   it('retries a ticket that reported failed with a new Assignment, and asks only a waiting worker for its status', () => {
     const h = harness()
     const ticketId = accepted(h).ticketId!

@@ -116,6 +116,9 @@ export function TicketPage({ id }: { id: string }) {
   const actor = actorName(t, data.mandate.actor)
   const { legacy } = data.basis
   const undelivered = data.inputs.filter(input => !input.delivered)
+  const followups = undelivered.filter(input => input.humanFollowup)
+  const background = undelivered.filter(input => !input.humanFollowup)
+  const lastReport = data.stage === 'idle' ? data.assignments.findLast(item => item.report)?.report : undefined
   const failedText = /^(?:\w+Error|Error)\b[:：]/.test(data.summary)
   const failed = data.stage === 'person' && data.action === 'failed'
   const opening = data.threads.find(thread => thread.url)
@@ -154,15 +157,21 @@ export function TicketPage({ id }: { id: string }) {
       <span className="dt-banner-label">{t('deliveryFailedPrefix')}</span>{data.deliveryError}
     </p>}
     <MandateDetails ticket={data} actor={actor} />
-    {undelivered.length > 0 && <Section title={t('undeliveredInputs')} count={undelivered.length}>
+    {followups.length > 0 && <Section title={t('pendingHumanInputs')} count={followups.length}>
       <Hint>{data.deliveryError ? t('inputRetryHint') : data.paused ? t('inputPausedHint') : t('inputWaitingHint')}</Hint>
-      <InputList inputs={undelivered} />
+      <InputList inputs={followups} />
     </Section>}
     {data.threads.length > 0 && <Section title={t('subscribedThreads')} count={data.threads.length}>
       <ul className="dt-list">{data.threads.map(thread => <ThreadLine key={thread.key} thread={thread} ticketId={data.id}
         context={thread.context} />)}</ul>
     </Section>}
     <div className="dt-details">
+      {lastReport?.summary && <Details icon="clock" title={<>{t('lastWorkerReport')} · <When at={lastReport.at} /></>}>
+        <MarkdownLite text={lastReport.summary} />
+      </Details>}
+      {background.length > 0 && <Details icon="inbox" title={`${t('pendingBackgroundInputs')} · ${background.length}`}>
+        <InputList inputs={background} />
+      </Details>}
       {/* A single Assignment adds nothing beyond the status line; list Assignments only once work has been resumed or handed over. */}
       {data.assignments.length > 1 && <Details icon="queue" title={`${t('term.assignment')} · ${data.assignments.length}`} open><Assignments
         ticket={data} /></Details>}

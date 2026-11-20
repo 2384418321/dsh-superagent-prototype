@@ -119,14 +119,20 @@ function ticketNote(ticket: Ticket, stage: TicketStage): { text: string; error: 
   if ((stage.action !== 'blocked' && stage.action !== 'failed') || !summary) return undefined
   return { text: preview(summary.split('\n')[0]!), error: stage.action === 'failed' }
 }
+/** Only direct messages written by a person are actionable follow-ups; host recovery and automation are context. */
+export const humanFollowup = (input: Ticket['inputs'][number]): boolean =>
+  input.kind === 'trigger' && input.human === true && !input.context
+
 export function ticketSummary(ticket: Ticket) {
   const stage = ticketStage(ticket)
   const note = ticketNote(ticket, stage)
   const state = liveTicket(ticket) ? 'open' as const : 'ended' as const
+  const undelivered = new Set(ticket.undelivered)
+  const pendingHumanInputs = undelivered.size ? ticket.inputs.filter(input => undelivered.has(input.id) && humanFollowup(input)).length : 0
   return { id: ticket.id, title: ticket.title, state, ...stage, ...note ? { note } : {},
     actions: { retry: canRetry(ticket), stop: liveTicket(ticket) }, strength: ticket.mandate.strength, ended: ticket.ended,
     attention: ticket.attention && { ...ticket.attention, question: markdown(ticket.attention.question) },
-      assignments: ticket.assignments.length, inputs: ticket.inputs.length, undelivered: ticket.undelivered.length,
+      assignments: ticket.assignments.length, inputs: ticket.inputs.length, undelivered: ticket.undelivered.length, pendingHumanInputs,
     // Every started Assignment of a Ticket runs in its one shared worker Session.
     deliveryError: attribute(ticket.delivery?.error), sessionId: ticket.assignments.some(item => item.startedAt)
       ? workerSessionId(ticket.id) : '',
@@ -142,8 +148,19 @@ export function threadFacts(store: Store, thread: Thread) {
   return { key: thread.key, source: thread.ref.source, title: threadTitle(store, thread), ...url ? { url } : {}, facts: (thread.meta.facts ?? {}) as ThreadFacts }
 }
 export type ThreadFactsView = ReturnType<typeof threadFacts>
+export function ticketThreadFacts(ticket: Ticket, threadKey: string, facts: ThreadFacts): ThreadFacts {
+  const outcome = ticket.follows?.find(follow => follow.thread === threadKey)?.closed?.outcome
+  if (!outcome) return facts
+  // The observed PR outcome takes precedence over checks and auto-merge from when it was open.
+  const { ci, autoMerge, ...otherFacts } = facts
+  const value = outcome === 'merged' ? { zh: '已合并', en: 'Merged' } : { zh: '已关闭', en: 'Closed' }
+  return { ...otherFacts, lifecycle: { value } }
+}
 export const ticketLine = (view: Snapshot, ticket: Ticket) => ({ ...ticketSummary(ticket),
-  threads: view.threadsOf(ticket.id).map(thread => threadFacts(view.store, thread)) })
+  threads: view.threadsOf(ticket.id).map(thread => {
+    const line = threadFacts(view.store, thread)
+    return { ...line, facts: ticketThreadFacts(ticket, thread.key, line.facts) }
+  }) })
 export function threadTitle(store: Pick<Store, 'read'>, thread: Thread): string {
   const label = attribute(thread.meta.label)
   if (label) return label

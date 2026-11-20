@@ -19,7 +19,7 @@ it('lists Tickets under Execution by who they wait on, with the Executor state a
   expect(all('.dt-chip').map(chip => chip.textContent)).toContain('GitHub#7自动合并已开启')
   await click(zh.idleLabel)
   expect(server.requests.some(request => request.path === 'tickets?state=idle&limit=20')).toBe(true)
-  expect(text()).toContain('执行器结束了当前回合')
+  expect(text()).toContain('本轮已结束')
   await click(zh['ticket.ended'])
   expect(text()).toContain('旧工单')
   expect(text()).toContain(zh['outcome.stopped'])
@@ -40,15 +40,45 @@ it('lists Tickets under Execution by who they wait on, with the Executor state a
   expect(server.settings).toMatchObject({ paused: true, executor: { maxWorkers: 4 } })
 })
 
-it('shows a waiting Ticket’s last report on its row', async () => {
+it('shows the current waiting stage, source facts and only human follow-ups in the list', async () => {
   server.tickets.open = [
-    ticketSummary({ note: { text: '等待独立设备负责人', error: false } }, { stage: 'idle' }),
-    ticketSummary({ id: 't2', note: { text: '旧回执', error: false } }),
+    ticketSummary({ note: { text: '等待独立设备负责人', error: false }, undelivered: 1, pendingHumanInputs: 0,
+      threads: [{ key: 'github:42', source: 'github', title: '#42', facts: { number: { value: '#42' },
+        lifecycle: { value: { zh: '已合并', en: 'Merged' } } } }] }, { stage: 'idle' }),
+    ticketSummary({ id: 't2', title: '有人工消息', undelivered: 3, pendingHumanInputs: 1 }, { stage: 'idle' }),
   ]
   at({ page: 'execution' })
   await mount()
-  expect(text()).toContain('上次回执：等待独立设备负责人')
-  expect(text()).not.toContain('旧回执')
+  const [automated, human] = all('.dt-ticket')
+  expect(automated?.textContent).toContain('等待后续消息')
+  expect(automated?.textContent).toContain('GitHub#42已合并')
+  expect(automated?.textContent).not.toMatch(/等待独立设备负责人|上次回执|未送达|待送达/)
+  expect(human?.textContent).toContain('人工消息待送达 1')
+  expect(human?.textContent).not.toContain('未送达 3')
+  await remount(en)
+  expect(text()).toContain('Waiting for a follow-up')
+})
+
+it('keeps the report with its own timestamp and undelivered background notices in ticket details', async () => {
+  const t1 = server.ticketDetails.t1!
+  const reportAt = '2026-09-22T00:02:00Z'
+  const human = t1.inputs[0]!
+  if (human.kind !== 'trigger' || !human.trigger) throw new Error('Expected the fixture human trigger')
+  server.ticketDetails.t1 = { ...t1, stage: 'idle', assignments: [{ ...t1.assignments[0]!,
+    report: { state: 'waiting', summary: '旧报告中的等待项', at: reportAt } }],
+    inputs: [{ ...human, humanFollowup: true }, { ...human, id: 'ci', triggerId: 'ci', humanFollowup: undefined,
+      trigger: { ...human.trigger, id: 'ci', human: false, preview: 'PR #42 已合并' } }] }
+  at({ page: 'execution', id: 't1' })
+  await mount()
+  expect(text()).toContain('待送达的人工消息')
+  expect(text()).toContain('顺便改标题')
+  expect(text()).not.toMatch(/旧报告中的等待项|PR #42 已合并/)
+  const report = all('.dt-disclosure-row').find(row => row.textContent?.startsWith('上次回执'))!
+  expect(report.querySelector('time')?.getAttribute('datetime')).toBe(reportAt)
+  await click(report)
+  expect(text()).toContain('旧报告中的等待项')
+  await click('待送达的后台输入 · 1')
+  expect(text()).toContain('PR #42 已合并')
 })
 
 it('stops an open Ticket from its page after confirmation', async () => {
@@ -65,8 +95,7 @@ it('shows a Ticket with its stage, its Mandate details with the Trigger and Deci
   await mount()
   await click(all('.dt-open').find(button => button.textContent === '修复回归')!)
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('修复回归')
-  // Progress is in the Channels and the Session, so the page has no report section.
-  expect(all('.dt-section-title').map(title => title.querySelector('.dt-section-name')?.textContent)).toEqual(['授权详情', '未送达的输入', '订阅的线程'])
+  expect(all('.dt-section-title').map(title => title.querySelector('.dt-section-name')?.textContent)).toEqual(['授权详情', '待送达的人工消息', '订阅的线程'])
   expect(document.querySelector('.dt-status-line .dt-stage')?.textContent).toBe(zh.executingLabel)
   expect(document.querySelector('.dt-status-line .dt-stage .dt-spinner')).not.toBeNull()
   // A Thread this Ticket follows reads as subscribed on its page, though no other Ticket follows it.

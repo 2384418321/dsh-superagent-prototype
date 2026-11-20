@@ -7,7 +7,7 @@ import type { Assignment, ChannelRef, Evaluation, Follow, Mandate, PolicyEffect,
 import type { AssessmentOutcome } from './ports.ts'
 import { EnginePart, type EngineOptions } from './part.ts'
 import type { Replies } from './replies.ts'
-import { canRetry } from './stage.ts'
+import { canRetry, ticketStage } from './stage.ts'
 
 const sameChannel = (a: ChannelRef, b: ChannelRef): boolean => JSON.stringify(a) === JSON.stringify(b)
 /** Whether an Input is a message no person wrote, such as CI's, a bot's, or the main Session's note. */
@@ -143,14 +143,20 @@ export class Tickets extends EnginePart {
     else if (note) this.addInput(ticket, input(key('input', ticketId, 'trigger', trigger.id, 'note', note)))
   }
   /**
-   * Ask a running worker whose latest report is `waiting` for a status report; leaves any other ticket alone.
+   * Ask a waiting worker for a status update at most once per report.
    * @returns whether the status request input was queued.
    * @throws UserError when the ticket is unknown.
    */
   requestStatus(ticketId: string): boolean {
     const ticket = this.require(ticketId)
-    if (!liveTicket(ticket) || runningAssignment(ticket)?.report?.state !== 'waiting') return false
-    this.addInput(ticket, { id: `status:${ticketId}:${ticket.updatedAt}`, kind: 'text', text: STATUS_REQUEST, at: this.now() })
+    const assignment = runningAssignment(ticket)
+    if (assignment?.report?.state !== 'waiting' || ticketStage(ticket).stage !== 'idle') return false
+    const { at } = assignment.report
+    const id = `status:${key(ticketId, assignment.id, at)}`
+    // Older tickets may already have a probe keyed by the ticket's update time.
+    if (ticket.inputs.some(input => input.id === id
+      || (input.kind === 'text' && input.id.startsWith(`status:${ticketId}:`) && input.at >= at))) return false
+    this.addInput(ticket, { id, kind: 'text', text: STATUS_REQUEST, at: this.now() })
     return true
   }
   /**

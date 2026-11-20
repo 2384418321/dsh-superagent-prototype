@@ -114,7 +114,7 @@ it('answers every routing tool in one shape: the decision it recorded, why, and 
   expect(await route({ kind: 'attach', ticket_id: ticket.id, trigger_id: other.id })).toEqual({ trigger_id: other.id, kind: 'attach',
     reason: expect.any(String), ticket: card })
   const status = await run('orchestrator_ticket_request_status', { ticket_id: ticket.id })
-  expect(status).toEqual({ reason: 'The worker is not waiting; nothing was sent', ticket: card })
+  expect(status).toEqual({ reason: 'No new status request was queued', ticket: card })
   await h.runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'The build broke.' })
   expect(await run('orchestrator_ticket_retry', { ticket_id: ticket.id })).toEqual({ reason: 'Started a new assignment', ticket: card })
   const chatter = feishu('4', '@bot 谢谢')

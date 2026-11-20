@@ -166,10 +166,10 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
     }),
     tool({
       name: 'orchestrator_ticket_request_status',
-      description: 'Ask the worker of an idle ticket, one whose turn ended without a report, for a status report; for other tickets it sends nothing and returns the card.',
+      description: 'Ask an idle worker for a status-only update at most once per waiting report and return its ticket card.',
       schema: z.object({ ticket_id: z.string() }).strict(),
       execute: async args => {
-        const reason = host.engine.requestStatus(args.ticket_id) ? 'Asked the worker for a status report' : 'The worker is not waiting; nothing was sent'
+        const reason = host.engine.requestStatus(args.ticket_id) ? 'Asked the worker for a status report' : 'No new status request was queued'
         return routed(host, { reason, ticketId: args.ticket_id })
       },
     }),

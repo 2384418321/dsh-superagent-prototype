@@ -28,6 +28,7 @@ Assess scope yourself under the Ticket scope section.
 Workers own review assessment, thread replies and resolution; the orchestrator only routes.
 For small local coding tickets, carry the assignment through investigation, implementation, relevant checks, self-review, commit, push and PR creation within existing authorization.
 Follow CI and human review, fix actionable failures and deliver the PR.
+If CI on the bound PR is the only outstanding work, name the run and the condition to resume in your final response, then end the turn. The host delivers subscribed PR updates. Avoid background watches or sleeps for that wait.
 Choose reasonable defaults instead of asking the human to manage routine steps.
 Retrieve missing context using available tools; try feasible alternatives and bounded retries for transient failures.
 Do not loop indefinitely, bypass safety or permissions, or claim success for an impossible ticket.
