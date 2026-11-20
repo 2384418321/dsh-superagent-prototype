@@ -11,7 +11,8 @@ async function fixture() {
   const ctx = new Context(); contexts.push(ctx); await ctx.plugin(SystemPrompt)
   const resolve = vi.fn(async value => value)
   const flush = vi.fn(async () => {})
-  ctx.reflect.provide('llm', { resolveCallConfig: resolve })
+  const listProviders = vi.fn(() => [{ id: 'existing', name: 'Existing' }, { id: 'worker', name: 'Worker' }])
+  ctx.reflect.provide('llm', { resolveCallConfig: resolve, listProviders })
   ctx.reflect.provide('sessionPersistence', { flush })
   const session = Session.create(SessionId('role-model'))
   const agent = { ctx, session } as Agent
@@ -19,7 +20,7 @@ async function fixture() {
   installModelSelection(ctx, host)
   const request = () => agentEvents(ctx, agent).waterfall('agent/request', { turn: 1, step: 1, signal: new AbortController().signal }, async () => ({ provider: 'seed', model: 'seed' }))
   const record = (selection: ModelSelection) => { const event = session.append('request/header', { header: { config: selection }, reason: 'initial' }); ctx.emit('session/event', session, event) }
-  return { ctx, agent, host, resolve, flush, request, record }
+  return { ctx, agent, host, resolve, flush, request, record, listProviders }
 }
 it('keeps prompt variables and initial routing on the role model without saving the host default', async () => {
   const { ctx, agent, request, record, flush } = await fixture()
@@ -62,4 +63,39 @@ it('inherits the host when unset and fails unavailable routes before recording a
   resolve.mockRejectedValueOnce(new Error('unknown provider'))
   await expect(initializeRoleModel(ctx, agent, { provider: 'unknown', model: 'x' })).rejects.toThrow('unknown provider')
   expect(agent.session.snapshotEvents().some(event => event.type === 'model/selection')).toBe(false)
+})
+
+it.each([false, true])('rebinds only a removed provider on idle native Sessions (removed=%s)', async removed => {
+  const { ctx, agent, record, resolve, flush, listProviders } = await fixture()
+  const old = { provider: 'existing', model: 'keep' }
+  const next = { provider: 'worker', model: 'new', reasoningEffort: ReasoningEffortId('max') }
+  record(old)
+  const select = vi.fn()
+  Object.assign(agent, { status: 'idle', model: { current: () => old, select } })
+  if (removed) listProviders.mockReturnValue([{ id: 'worker', name: 'Worker' }])
+  await initializeRoleModel(ctx, agent, next)
+  if (removed) {
+    expect(resolve).toHaveBeenCalledWith(next)
+    expect(select).toHaveBeenCalledExactlyOnceWith(next)
+    expect(flush).toHaveBeenCalledOnce()
+  } else {
+    expect(resolve).not.toHaveBeenCalled()
+    expect(select).not.toHaveBeenCalled()
+  }
+})
+
+it('preserves a concurrent manual selection while resolving a replacement', async () => {
+  const { ctx, agent, record, resolve, listProviders } = await fixture()
+  let current = { provider: 'removed', model: 'old' }
+  record(current)
+  const select = vi.fn()
+  Object.assign(agent, { status: 'idle', model: { current: () => current, select } })
+  listProviders.mockReturnValue([{ id: 'worker', name: 'Worker' }])
+  resolve.mockImplementationOnce(async value => {
+    current = { provider: 'worker', model: 'manual' }
+    return value
+  })
+  await initializeRoleModel(ctx, agent, { provider: 'worker', model: 'new' })
+  expect(resolve).toHaveBeenCalledOnce()
+  expect(select).not.toHaveBeenCalled()
 })
