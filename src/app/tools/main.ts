@@ -26,6 +26,8 @@ export interface MainToolsHost {
   readonly settings: Pick<Settings, 'view' | 'block' | 'save' | 'pause' | 'sync'>
   readonly assessor: Pick<MasterAssessor, 'context' | 'read' | 'decide'>
   readonly resources: ResourceHost
+  /** Whether this Session can route a trigger outside its scoped assessment tools. */
+  mayRouteTrigger(sessionId: string, triggerId: string): boolean
   /** Schedules a pass to carry out work queued by an Engine command (such as an Eval or ticket resume). */
   requestPass(): void
   sendReplies(): Promise<void>
@@ -122,7 +124,7 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
  * `orchestrator_route`: routing decisions for several triggers in one call, in order. Each runs as its own Engine command; one
  * that is refused, or fails, is answered so, and the others still run.
  */
-function routeTool(host: MainToolsHost): Tool {
+function routeTool(host: MainToolsHost, sessionId: string): Tool {
   return tool({
     name: 'orchestrator_route',
     description: 'Route candidates, one item each by the card\'s trigger_id, in one call: accept an explicit request as a new ticket, attach a trigger to an existing ticket, stop a ticket on a person\'s stop message, or ignore a candidate that needs no ticket or stop, as dispatch says. Items run in order and each is answered on its own; a refused item leaves the others. An inferred candidate may be ignored here; accepting one goes through orchestrator_eval_decide.',
@@ -134,6 +136,8 @@ function routeTool(host: MainToolsHost): Tool {
         const problem = invalid(item)
         if (problem) return { ...head, refused: problem }
         try {
+          if (!host.mayRouteTrigger(sessionId, item.trigger_id))
+            return { ...head, refused: 'The previous main Session is still assessing this trigger' }
           const result = route(host, item, decided)
           if ('refused' in result) return { ...head, ...result }
           for (const id of result.triggerIds ?? []) if (!decided.has(id)) decided.set(id, item.trigger_id)
@@ -157,7 +161,7 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
   return [
     readTool('Read one page of a resource the resource parameter lists, such as the ticket list or a ticket. Follow next_offset, and next_resource where a page names one.',
       false, (resource, offset, limit, signal) => readResource(resources, resource, offset, limit, undefined, signal)),
-    routeTool(host),
+    routeTool(host, agent.id),
     tool({
       name: 'orchestrator_ticket_retry',
       description: 'Start a new assignment on an explicit human request to retry a ticket whose worker reported failed or blocked, or whose input was not delivered; the stalled one ends.',
@@ -190,6 +194,7 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
       description: 'Queue a trigger for a fresh assessment, such as after its Source\'s access changed; a follow-up that reached a ticket comes back only from its worker.',
       schema: z.object({ trigger_id: z.string() }).strict(),
       execute: async args => {
+        if (!host.mayRouteTrigger(agent.id, args.trigger_id)) return { queued: false }
         // A follow-up that reached a ticket is its worker's to judge, which hands back what is not its own; a person may still requeue it.
         const trigger = host.store.triggers.get(args.trigger_id)
         const owners = trigger ? followupOwners(trigger, host.store) : []

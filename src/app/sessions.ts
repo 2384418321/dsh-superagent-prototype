@@ -32,6 +32,8 @@ export interface SessionsHost {
   readonly masterId: string
   readonly lifetime: AbortSignal
   masterDeliveryHeld(): boolean
+  isDrainingMaster(sessionId: string): boolean
+  mayUseMainTool(sessionId: string, name: string, input: unknown): boolean
   closing(): boolean
   /** Execution environment variables for `ticket`, rendered into its worker's system prompt. */
   environment(ticket: Ticket): Variable[]
@@ -43,7 +45,16 @@ export interface SessionsHost {
  * What Sessions registered for an agent it decorated: the releases of its prompt section, tools and skill scope, the scope
  * its skills are registered in, and the skills of one prompt revision; for a worker's subagent, only its tool limits.
  */
-interface SessionBinding { disposers: (() => void)[]; scope?: Context; skills?: { revision: number; dispose: () => void }; subagent?: true }
+interface SessionBinding {
+  disposers: (() => void)[]
+  scope?: Context
+  skills?: { revision: number; dispose: () => void }
+  subagent?: true
+  main?: { wasOwner: boolean; blockingTools: number }
+}
+
+const ASSESSMENT_TOOLS = new Set(['orchestrator_eval', 'orchestrator_eval_read', 'orchestrator_eval_decide'])
+const MAIN_TOOL_DENIED = 'This Session is not authorized to use this main Session tool'
 
 /** The agent presets Executor Sessions and the main Session are created with, which the bundle's patch defines. */
 export const WORKER_PRESET = 'dsh-superagent-worker', ROUTER_PRESET = 'dsh-superagent-router'
@@ -117,6 +128,7 @@ export class Sessions {
       const agent = ctx.agents.get(session.id)
       const binding = agent && agent.session === session ? this.bindings.get(agent) : undefined
       if (!agent || !binding || binding.subagent) return
+      if (binding.main && this.ownsMainRole(agent.id)) binding.main.wasOwner = true
       this.retryHealth.observe(agent.id, event)
       this.updateModelHealth()
     })
@@ -126,15 +138,27 @@ export class Sessions {
     ctx.inject(['agentPresets'], child => {
       child.on('agent-preset/selected', (sessionId, preset) => {
         const ticketId = ticketOfSession(sessionId), agent = ctx.agents.get(sessionId as SessionId)
-        const ours = sessionId === this.host.masterId ? ROUTER_PRESET : ticketId && this.host.store.tickets.get(ticketId) ? WORKER_PRESET : undefined
+        const ours = this.ownsMainRole(sessionId) ? ROUTER_PRESET : ticketId && this.host.store.tickets.get(ticketId) ? WORKER_PRESET : undefined
         if (!ours || preset === ours || !agent) return
         const presets = child.get('agentPresets') as { select(agent: Agent, preset: string): Promise<string> }
         presets.select(agent, ours).catch(() => {})
       })
     })
     ctx.on('agent/status', ({ agent, status }) => {
-      if (status === 'idle' && !this.host.closing()) { this.retryHealth.clear(agent.id); this.updateModelHealth() }
+      const main = this.bindings.get(agent)?.main
+      if (main && this.ownsMainRole(agent.id)) main.wasOwner = true
+      if (status !== 'idle' || this.host.closing()) return
+      if (main?.wasOwner && !this.ownsMainRole(agent.id) && !main.blockingTools) this.release(agent)
+      this.retryHealth.clear(agent.id)
+      this.updateModelHealth()
     })
+  }
+  private ownsMainRole(sessionId: string): boolean {
+    return sessionId === this.host.masterId || this.host.isDrainingMaster(sessionId)
+  }
+  /** Whether changing the main Session would overtake a non-assessment tool already executing in it. */
+  hasBlockingMainTools(agent: Agent): boolean {
+    return (this.bindings.get(agent)?.main?.blockingTools ?? 0) > 0
   }
   /** Resolves or creates session `id` in workspace `cwd`, initializes its role model, decorates it with prompts/skills/tools, sets `danger-full-access` permissions, and renames it to `title`. */
   async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker'): Promise<Agent> {
@@ -153,6 +177,18 @@ export class Sessions {
     await this.decorate(result.agent, role === 'orchestrator')
     ctx.permissionPresets.set(result.agent.session, 'danger-full-access')
     await ctx.sessionController.rename({ sessionId: id as SessionId, title })
+    return result.agent
+  }
+  /** Rebinds a saved draining main Session without creating a replacement if its history is missing. */
+  async restoreDraining(id: string): Promise<Agent | undefined> {
+    if (!this.host.isDrainingMaster(id)) return undefined
+    const result = await this.ctx.sessionController.resolveAgent(id as SessionId)
+    if ('error' in result) {
+      if (result.error.code === 'session/not-found') return undefined
+      throw result.error
+    }
+    if (!this.host.isDrainingMaster(id)) return undefined
+    await this.decorate(result.agent, true)
     return result.agent
   }
   /** Returns whether `sessionId` already holds the message delivered under `requestId`, or `false` if the session does not exist. */
@@ -223,9 +259,13 @@ export class Sessions {
           const image = value && typeof value === 'object' && 'image' in value ? (value as { image: never }).image : undefined
           return image ? [text, { type: 'image' as const, attachment: image }] : [text]
         } },
-        execute: (args, execution) => {
-          if (master && agent.id !== this.host.masterId) throw new Error('This Session is not the current main Session')
-          return execute(schema.parse(args), execution.signal)
+        execute: async (args, execution) => {
+          if (master && (this.bindings.get(agent) !== binding || !this.host.mayUseMainTool(agent.id, name, args))) throw new Error(MAIN_TOOL_DENIED)
+          const input = schema.parse(args)
+          const tracked = !ASSESSMENT_TOOLS.has(name) ? binding.main : undefined
+          if (tracked) tracked.blockingTools++
+          try { return await execute(input, execution.signal) }
+          finally { if (tracked) tracked.blockingTools-- }
         } }))
     }
   }
@@ -244,12 +284,12 @@ export class Sessions {
     const ticketId = ticketOfSession(agent.id)
     return ticketId === undefined ? undefined : this.host.store.tickets.get(ticketId)
   }
-  private async decorate(agent: Agent, master = agent.id === this.host.masterId): Promise<void> {
+  private async decorate(agent: Agent, master = this.ownsMainRole(agent.id)): Promise<void> {
     if (this.bindings.has(agent)) return
     const host = this.host
     const ticket = master ? undefined : this.ticketOf(agent)
     if (!master && !ticket) { this.limitSubagent(agent); return }
-    const binding: SessionBinding = { disposers: [] }
+    const binding: SessionBinding = { disposers: [], ...(master ? { main: { wasOwner: this.ownsMainRole(agent.id), blockingTools: 0 } } : {}) }
     this.bindings.set(agent, binding)
     this.retryHealth.restore(agent.id, agent.session.snapshotEvents())
     if (agent.status === 'idle') this.retryHealth.clear(agent.id)
@@ -272,10 +312,25 @@ export class Sessions {
     // Bail out if the agent was disposed while awaiting the skill scope.
     if (this.bindings.get(agent) !== binding) return
     const register = this.registerTool(agent, binding, master)
-    for (const tool of host.tools(agent, ticket)) register(tool.name, tool.description, tool.schema, tool.execute)
-    if (master) {
+    const tools = host.tools(agent, ticket)
+    for (const tool of tools) register(tool.name, tool.description, tool.schema, tool.execute)
+    const main = binding.main
+    if (main) {
+      const registeredTools = new Set(tools.map(tool => tool.name))
       binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }),
-        agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
+        agent.ctx.tools.guard(execution => {
+          if (this.bindings.get(agent) !== binding || !host.mayUseMainTool(agent.id, execution.name, execution.arguments)) return MAIN_TOOL_DENIED
+          return noWait(execution, () => this.routed(agent))
+        }),
+        // The host guard ran when the call was prepared. Ownership can change while it waits for dispatch.
+        agent.ctx.on('tools/execute', async (execution, next) => {
+          if (execution.agent !== agent) return next()
+          if (this.bindings.get(agent) !== binding || !host.mayUseMainTool(agent.id, execution.name, execution.arguments)) throw new Error(MAIN_TOOL_DENIED)
+          if (registeredTools.has(execution.name)) return next()
+          main.blockingTools++
+          try { return await next() }
+          finally { main.blockingTools-- }
+        }, { prepend: true }))
     } else {
       // An Executor Session keeps the profile's work tools it has, which DSH requires to be known; its own tools are not masked.
       binding.disposers.push(...this.workOnly(agent, ticket!.id))

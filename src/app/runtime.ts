@@ -54,6 +54,7 @@ import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
 const now = (): string => new Date().toISOString()
 const MASTER_DRAIN_TIMEOUT_MS = 10_000
+const EVAL_TOOLS = new Set(['orchestrator_eval', 'orchestrator_eval_read', 'orchestrator_eval_decide'])
 
 /**
  * Composition root of dsh-superagent that connects `Store`, `Setup`, `Engine`, `SourceRegistry`, `Effects`, `Outbox`, `Passes`, `Sessions`, `Settings`, `Prompts`, `DshExecutor`, and `MasterAssessor`.
@@ -133,6 +134,7 @@ export class Runtime extends Service implements SourceHost {
         feishuPageSize: () => feishuSettings(sources).readPageSize, sourceLink: link }
       const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'),
         get masterId() { return runtime.masterId }, lifetime: this.lifetime, masterDeliveryHeld: () => this.masterDeliveryHeld(),
+        isDrainingMaster: id => runtime.isDrainingMaster(id), mayUseMainTool: (id, name, input) => runtime.mayUseMainTool(id, name, input),
         closing: () => this.closing(), environment,
         tools: (agent, ticket) => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, agent) })
       const policyChanged: EngineForSettings['policyChanged'] = (from, to, effects) => { this.engine.policyChanged(from, to, effects) }
@@ -143,8 +145,8 @@ export class Runtime extends Service implements SourceHost {
         repliedTo: trigger => repliedTo({ store, sources }, trigger) })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused() || this.masterDeliveryHeld(), threadContext: trigger => sources.threadContext(trigger),
-        assessmentInProgress: () => store.threads.active().some(thread => !!thread.evaluating?.delivered),
-        deliver: (id, text, signal, recovery) => sessions.promptAssessment(this.masterId, id, text, signal, recovery),
+        assessmentInProgress: () => store.threads.active().some(({ evaluating }) => !!evaluating?.delivered && !evaluating.drainOwnerSessionId),
+        deliver: (id, text, signal, recovery, owner) => sessions.promptAssessment(owner ?? this.masterId, id, text, signal, recovery),
         candidateCard: candidate => candidateCard(links, candidate) })
       const outbox = this.outbox = new Outbox({ store, effects, sources, commands, paused: () => this.paused() })
       const { assessor, executor } = this
@@ -182,6 +184,7 @@ export class Runtime extends Service implements SourceHost {
         get deployment() { return setup.deployment }, configured: () => setup.configured(),
         get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
       this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources,
+        mayRouteTrigger: (id, triggerId) => this.mayUseMainTool(id, 'orchestrator_eval', { trigger_id: triggerId }),
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
@@ -193,6 +196,18 @@ export class Runtime extends Service implements SourceHost {
     }
   }
   get masterId(): string { return this.store.get(KV.runtime.masterId)! }
+  private isDrainingMaster(sessionId: string): boolean {
+    return this.store.threads.active().some(({ evaluating }) => evaluating?.drainOwnerSessionId === sessionId)
+  }
+  private evaluationOwner(triggerId: string): string | undefined {
+    return this.engine.candidate(triggerId)?.thread.evaluating?.drainOwnerSessionId
+  }
+  private mayUseMainTool(sessionId: string, name: string, input: unknown): boolean {
+    if (!EVAL_TOOLS.has(name)) return sessionId === this.masterId
+    const triggerId = (input as { trigger_id?: unknown } | undefined)?.trigger_id
+    const owner = typeof triggerId === 'string' ? this.evaluationOwner(triggerId) : undefined
+    return sessionId === (owner ?? this.masterId)
+  }
   private masterDeliveryHeld(): boolean { return this.holdingMasterDeliveries || !!this.store.get(KV.runtime.handoff) }
   get health(): Readonly<Record<string, Health>> { return this.board.all }
   /** Aborted when dsh-superagent stops or loses its state directory lock, cancelling running reads and subprocesses. */
@@ -232,14 +247,16 @@ export class Runtime extends Service implements SourceHost {
       const source = (message as { source?: { kind?: string; form?: string } }).source
       return source?.kind === 'dsh-superagent' && source.form === 'notice'
     }
-    const idle = (agent: Agent, allowNotices: boolean) => this.ctx.agents.get(agent.id) === agent && agent.status === 'idle'
+    const readyToRotate = (agent: Agent, allowNotices: boolean, allowRunning = false) => this.ctx.agents.get(agent.id) === agent
+      && (agent.status === 'idle' || (allowRunning && agent.status === 'running')) && !this.sessions.hasBlockingMainTools(agent)
       && !agent.inbox.nextTurn.length && !agent.inbox.nextStep.some(message => !allowNotices || !notice(message))
       && !jobs.list(agent.id).some(job => job.owner === agent.id && (job.status === 'running' || job.status === 'stopping'))
     const busyDescendants = async (agent: Agent) => subagents.listDescendants
       ? (await subagents.listDescendants(agent.id)).some(child => child.kind !== 'child' || child.activity !== 'inactive' || this.ctx.agents.get(child.id as SessionId))
       : (await subagents.listChildren!(agent.id)).some(child => this.ctx.agents.get(child.id as SessionId))
-    const activeAssessment = () => this.store.threads.active().some(thread => !!thread.evaluating?.delivered)
-    if (!old || !idle(old, true) || activeAssessment()) return { error: 'masterBusy' }
+    const opened = () => this.store.threads.active().filter(({ evaluating }) => !!evaluating?.delivered && !evaluating.drainOwnerSessionId)
+    const oldReady = (agent: Agent) => readyToRotate(agent, true, manageProcessing && opened().length > 0)
+    if (!old || !oldReady(old) || (!manageProcessing && opened().length)) return { error: 'masterBusy' }
     this.rotating = true
     const masterId = target ?? `orchestrator-${randomUUID()}`
     let preparing = false
@@ -247,17 +264,17 @@ export class Runtime extends Service implements SourceHost {
     try {
       const priorWork = await until(Promise.all([busyDescendants(old)]), this.lifetime, MASTER_DRAIN_TIMEOUT_MS)
       if (!priorWork) return { error: 'masterWorkUnverified' }
-      if (!idle(old, true) || activeAssessment() || priorWork[0]) return { error: 'masterBusy' }
+      if (!oldReady(old) || (!manageProcessing && opened().length) || priorWork[0]) return { error: 'masterBusy' }
       if (target) {
         const resolved = await this.ctx.sessionController.resolveAgent(target as SessionId)
         if ('error' in resolved || !this.sessions.routed(resolved.agent)) return { error: 'invalidMasterTarget' }
-        if (!idle(resolved.agent, false)) return { error: 'masterBusy' }
+        if (!readyToRotate(resolved.agent, false) || this.isDrainingMaster(target)) return { error: 'masterBusy' }
       }
       preparing = true
       const next = await this.sessions.ensure(masterId, this.machine.stateDir, 'dsh-superagent orchestrator', 'orchestrator')
       // The old route keeps working while the host prepares a candidate. Limit only deliveries to the main Session at cutover.
       this.holdingMasterDeliveries = true
-      const drained = await until(Promise.all([this.effects.idle('relay'), this.effects.idle('notice'), this.effects.idle('assessment')]),
+      const drained = await until(Promise.all([this.effects.idle('relay'), this.effects.idle('notice'), this.effects.idle('assessment'), this.effects.idle('assessmentRecovery')]),
         this.lifetime, MASTER_DRAIN_TIMEOUT_MS)
       if (!drained) return { error: 'masterWorkUnverified' }
       const descendants = await until(Promise.all([busyDescendants(old), busyDescendants(next)]), this.lifetime, MASTER_DRAIN_TIMEOUT_MS)
@@ -266,8 +283,9 @@ export class Runtime extends Service implements SourceHost {
       this.lifetime.throwIfAborted()
       if (this.closing() || expected !== this.masterId || (!manageProcessing && !this.store.settings().paused))
         return { error: 'masterChanged' }
-      if (descendants.some(Boolean) || !idle(old, true) || !idle(next, false) || activeAssessment()) return { error: 'masterBusy' }
-      const unopened = this.store.threads.active().flatMap(({ evaluating }) => evaluating?.offeredAt ? [evaluating] : [])
+      const draining = opened()
+      if (descendants.some(Boolean) || !oldReady(old) || !readyToRotate(next, false) || (!manageProcessing && draining.length)) return { error: 'masterBusy' }
+      const unopened = this.store.threads.active().flatMap(({ evaluating }) => evaluating?.offeredAt && !evaluating.delivered ? [evaluating] : [])
         .sort((a, b) => b.offeredAt!.localeCompare(a.offeredAt!))
       const candidates = unopened.map(evaluation => this.engine.candidate(evaluation.triggerIds[0]!))
       if (unopened.some((evaluation, index) => candidates[index]?.evalId !== evaluation.id)) return { error: 'masterWorkUnverified' }
@@ -278,12 +296,22 @@ export class Runtime extends Service implements SourceHost {
         this.store.set(KV.runtime.masterId, masterId)
         this.store.set(KV.runtime.handoff, { masterId, text, deliveryId: randomUUID() })
         this.effects.enqueue('handoff', masterId, {})
+        for (const thread of draining) {
+          const evaluation = thread.evaluating!
+          evaluation.drainOwnerSessionId = expected
+          this.store.threads.save(thread)
+          if (old.status === 'idle') {
+            const candidate = this.engine.candidate(evaluation.triggerIds[0]!)
+            if (candidate) this.assessor.resumeOpened(candidate)
+          }
+        }
         // Preserve the same eval and deadline across the handoff, before later assessments.
         for (const candidate of candidates) this.assessor.request(candidate!, true, true)
       })
       committed = true
       for (const evaluation of unopened) this.assessor.release(evaluation.id)
-      this.sessions.release(old)
+      for (const thread of draining) this.assessor.drainedSlot(thread.evaluating!.id)
+      if (!draining.length) this.sessions.release(old)
       // Only the machine notices already covered by the durable handoff can leave the old inbox.
       for (const message of pending) {
         try { old.inbox.remove(message.id) } catch (error) { this.ctx.logger.warn('dsh-superagent could not retire a transferred notice: %s', String(error)) }
@@ -315,7 +343,33 @@ export class Runtime extends Service implements SourceHost {
     }
     this.sessions.install()
     this.executor.install()
-    await this.sessions.ensure(this.masterId, this.machine.stateDir, 'dsh-superagent orchestrator', 'orchestrator')
+    const master = await this.sessions.ensure(this.masterId, this.machine.stateDir, 'dsh-superagent orchestrator', 'orchestrator')
+    for (const thread of this.store.threads.active()) {
+      if (!thread.evaluating?.delivered) continue
+      const owner = thread.evaluating?.drainOwnerSessionId
+      const evalId = thread.evaluating.id
+      try {
+        const agent = owner ? await this.sessions.restoreDraining(owner) : master
+        const current = this.store.threads.get(thread.key)
+        const evaluation = current?.evaluating
+        if (!evaluation || evaluation.id !== evalId) continue
+        this.store.atomic(() => {
+          if (!agent) {
+            // Only confirmed absence releases ownership, so the same evaluation can be reopened by the current main Session.
+            delete evaluation.drainOwnerSessionId
+            delete evaluation.delivered
+            delete evaluation.offeredAt
+            this.store.threads.save(current!)
+          }
+          const candidate = this.engine.candidate(evaluation.triggerIds[0]!)
+          if (!candidate) return
+          if (!agent) this.assessor.request(candidate, true, true)
+          else if (agent.status === 'idle') this.assessor.resumeOpened(candidate)
+        })
+      } catch (error) {
+        this.ctx.logger.warn('dsh-superagent could not restore a draining assessment owner: %s', String(error))
+      }
+    }
     const handoff = this.store.get(KV.runtime.handoff)
     if (handoff?.masterId === this.masterId && !this.effects.pending('handoff', this.masterId))
       this.effects.enqueue('handoff', this.masterId, {})
@@ -343,8 +397,9 @@ export class Runtime extends Service implements SourceHost {
     this.closingFlag = true; const passes = this.passes.stop(); this.stopped.abort()
     try {
       this.assessor.stop()
-      const ids = [this.masterId, ...this.store.tickets.list().map(ticket => workerSessionId(ticket.id))]
-      const agents = ids.map(id => this.ctx.agents.get(id as SessionId)).filter((agent): agent is Agent => agent !== undefined)
+      const ownerIds = this.store.threads.active().flatMap(({ evaluating }) => evaluating?.drainOwnerSessionId ? [evaluating.drainOwnerSessionId] : [])
+      const ids = new Set([this.masterId, ...ownerIds, ...this.store.tickets.list().map(ticket => workerSessionId(ticket.id))])
+      const agents = [...ids].map(id => this.ctx.agents.get(id as SessionId)).filter((agent): agent is Agent => agent !== undefined)
       for (const agent of agents) agent.cancel({ kind: 'user' }, { keepInbox: true })
       await Promise.allSettled([passes, this.effects.drain(), ...agents.map(agent => agent.whenIdle())])
       // The workers' jobs and subagents stop too: their ends would start worker turns without the tool limits released below.

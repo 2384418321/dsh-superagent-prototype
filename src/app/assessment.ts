@@ -1,5 +1,6 @@
 /** Proactive candidate assessment for the main Session: relays candidate cards, serves bounded context reads, and records outcomes. */
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { reasonText, threadKey, type Assessor, type AssessmentOutcome, type Candidate, type EngineForMainSession,
   type Trigger } from '../core/index.ts'
@@ -13,7 +14,7 @@ import type { TriggerContext } from '../sources/kind.ts'
 import { relatedTickets } from './cards.ts'
 import { textPage } from './context.ts'
 import { AcknowledgementSchema } from './tools/tool.ts'
-import type { Effects } from './effects.ts'
+import type { EffectPayloads, Effects } from './effects.ts'
 
 /** Schema for a short lowercase kebab-case English ticket worktree name (1–4 words, at most 32 characters). */
 export const WorktreeNameSchema = z.string().max(32).regex(/^[a-z]+(?:-[a-z0-9]+){0,3}$/, 'Use 1–4 short English words in lowercase kebab-case, at most 32 characters').describe('Meaningful short English ticket name, e.g. fix-plan-color. Translate Chinese titles into English; no Chinese, pinyin or generic ticket names. 1–4 lowercase words in kebab-case, at most 32 characters.')
@@ -52,7 +53,7 @@ export interface AssessorHost {
   readonly commands: Commands
   readonly deployment: Deployment
   /** Durable effect queue through which candidate assessments are delivered. */
-  readonly effects: Pick<Effects, 'enqueue' | 'handle' | 'kick'>
+  readonly effects: Pick<Effects, 'enqueue' | 'handle' | 'kick' | 'pending'>
   settings(): Settings
   /** Whether processing is paused, which holds candidate deliveries. */
   paused(): boolean
@@ -60,7 +61,7 @@ export interface AssessorHost {
   /** Thread context reader for `trigger`'s Source, or `undefined` when the Source has none. */
   threadContext(trigger: Trigger): TriggerContext | undefined
   /** Queues a candidate once; recovery wakes a consumed but unopened candidate after a host restart. */
-  deliver(requestId: string, text: string, signal: AbortSignal, recovery?: boolean): Promise<void>
+  deliver(requestId: string, text: string, signal: AbortSignal, recovery?: boolean, owner?: string): Promise<void>
   candidateCard(candidate: Candidate): Promise<Record<string, unknown>>
 }
 
@@ -95,24 +96,40 @@ export class MasterAssessor implements Assessor {
   /** Registers the handler that relays each Eval's candidate card, which a link lookup may delay for seconds. */
   constructor(private readonly host: AssessorHost) {
     // One candidate holds the assessment slot until decided, so another cannot expire while waiting behind it.
-    host.effects.handle('assessment', async ({ triggerId, recovery }, evalId) => {
+    const deliver = async ({ triggerId, recovery }: EffectPayloads['assessment'], evalId: string, deliveryId?: string) => {
       const candidate = this.host.engine.candidate(triggerId)
-      if (candidate?.evalId !== evalId) return
+      const evaluation = candidate?.thread?.evaluating
+      if (candidate?.evalId !== evalId || Boolean(evaluation?.delivered) !== Boolean(deliveryId)) return
       const abort = new AbortController()
       this.deliveries.set(evalId, abort)
       try {
-        await this.host.deliver(`candidate:${evalId}`, JSON.stringify({ kind: 'candidate', ...await this.host.candidateCard(candidate) }),
-          AbortSignal.any([abort.signal, this.controller.signal]), recovery)
+        const owner = evaluation?.drainOwnerSessionId
+        const requestId = deliveryId ? `candidate:${evalId}:${deliveryId}` : `candidate:${evalId}`
+        await this.host.deliver(requestId, JSON.stringify({ kind: 'candidate', ...await this.host.candidateCard(candidate) }),
+          AbortSignal.any([abort.signal, this.controller.signal]), recovery, owner)
         this.host.engine.candidateOffered(evalId)
+        if (deliveryId || owner) this.drainedSlot(evalId)
       } catch (error) {
         this.deliveries.delete(evalId)
         if (!abort.signal.aborted) throw error
       }
-    }, { limit: () => host.paused() || this.deliveries.size || host.assessmentInProgress() ? 0 : 1 })
+    }
+    host.effects.handle('assessment', deliver, { limit: () => host.paused() || this.deliveries.size || host.assessmentInProgress() ? 0 : 1 })
+    host.effects.handle('assessmentRecovery', ({ triggerId, deliveryId }, evalId) => deliver({ triggerId }, evalId, deliveryId), { limit: () => host.paused() ? 0 : 1 })
   }
   /** Enqueues an `assessment` effect to deliver `candidate`'s card to the main Session. */
   request(candidate: Candidate, recovery?: boolean, first = false): void {
     this.host.effects.enqueue('assessment', candidate.evalId, { triggerId: candidate.triggers[0]!.id, ...(recovery ? { recovery } : {}) }, first)
+  }
+  resumeOpened(candidate: Candidate): void {
+    if (!this.host.effects.pending('assessmentRecovery', candidate.evalId)) {
+      this.host.effects.enqueue('assessmentRecovery', candidate.evalId, { triggerId: candidate.triggers[0]!.id, deliveryId: randomUUID() })
+    }
+  }
+  /** Opened work keeps its read cache with the previous Session and stops occupying the new Session's delivery slot. */
+  drainedSlot(evalId: string): void {
+    this.deliveries.delete(evalId)
+    this.host.effects.kick()
   }
   /** Whether `evalId` is still the active evaluation for `trigger`. */
   private live(evalId: string, trigger: Trigger): boolean { return this.host.engine.candidate(trigger.id)?.evalId === evalId }

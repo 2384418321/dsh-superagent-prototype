@@ -147,6 +147,8 @@ export interface Evaluation {
   startedAt: string
   /** First explicit assessment read; retained as `delivered` for stored-state compatibility. Inbox consumption does not start the clock. */
   delivered?: string
+  /** The previous main Session may finish only this opened evaluation after a rotation. */
+  drainOwnerSessionId?: string
   /** The candidate card was sent to the main Session and started waiting for its first read. */
   offeredAt?: string
   /** Expiration timestamp once the card is sent or opened; processing pauses shift it forward. */

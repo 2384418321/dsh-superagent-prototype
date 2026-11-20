@@ -207,20 +207,46 @@ it('moves an unopened offer ahead of waiting assessments without resuming proces
   expect(replacementDeliveries()).toEqual(['Continue.', expect.stringContaining(trigger.id)])
 })
 
-it('keeps an opened assessment with the old main session', async () => {
+it('rotates during an opened assessment and keeps that assessment on the old Session', async () => {
   const old = h.runtime.masterId
-  const trigger = feishu('1', '@bot 查一下回归')
+  const { sessionId } = await h.acceptedTicket(feishu('1', '@bot 修复回归'))
+  const worker = h.agents.get(sessionId)!
+  const job = h.jobs.run(sessionId)
+  const trigger = feishu('2', '这个回归需要评估', { mentions: [] })
   h.runtime.receive(trigger)
   await h.runtime.idle()
-  const evaluation = h.runtime.store.threads.active().find(thread => thread.evaluating?.triggerIds.includes(trigger.id))!.evaluating!
-  h.runtime.engine.candidateRead(evaluation.id)
+  expect(h.runtime.engine.candidate(trigger.id)?.strength).toBe('inferred')
+  await h.runTool(old, 'orchestrator_eval', { trigger_id: trigger.id })
   const oldAgent = h.agents.get(old)!
-  oldAgent.status = 'idle'
+  oldAgent.status = 'running'
+  oldAgent.inbox.nextTurn.length = 0
   oldAgent.inbox.nextStep.length = 0
   const response = await h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue.', manageProcessing: true })
-  expect(response.status).toBe(409)
-  expect(h.runtime.masterId).toBe(old)
-  expect(h.runtime.store.threads.active().find(thread => thread.evaluating?.id === evaluation.id)?.evaluating?.delivered).toBeDefined()
+  expect(response.status).toBe(200)
+  const next = h.runtime.masterId
+  expect(response.body.masterId).toBe(next)
+  expect(h.runtime.store.settings().paused).toBe(false)
+  expect(worker.cancel).not.toHaveBeenCalled()
+  expect(h.jobs.service.list(sessionId)).toContainEqual(expect.objectContaining({ id: job, status: 'running' }))
+  expect(oldAgent.cancel).not.toHaveBeenCalled()
+  expect(h.runtime.engine.candidate(trigger.id)?.thread.evaluating?.drainOwnerSessionId).toBe(old)
+
+  const upcoming = feishu('3', '@bot 新问题')
+  h.runtime.receive(upcoming)
+  await h.runtime.idle()
+  expect(h.deliveries.mock.calls.some(([call]) => call.sessionId === next && call.text.includes(upcoming.id))).toBe(true)
+  await expect(h.runTool(next, 'orchestrator_eval', { trigger_id: trigger.id })).rejects.toThrow()
+  await expect(h.runTool(old, 'orchestrator_eval', { trigger_id: upcoming.id })).rejects.toThrow()
+  await expect(h.runTool(old, 'orchestrator_read', { resource: 'tickets' })).rejects.toThrow()
+  await expect(h.runTool(next, 'orchestrator_route', { decisions: [trigger, upcoming].map(item => ({ kind: 'ignore', trigger_id: item.id, reason: 'No change.' })) }))
+    .resolves.toMatchObject({ results: [{ refused: expect.any(String) }, { decision: 'ignore' }] })
+  const rule_assessments = h.runtime.store.settings().policy.rules.filter(rule => rule.enabled)
+    .map(rule => ({ rule_id: rule.id, matched: false, reason: 'Chatter.' }))
+  await expect(h.runTool(old, 'orchestrator_eval_decide', { trigger_id: trigger.id, decision: 'ignore', rule_assessments,
+    direction: { implementation_requested: false, target_basis: 'undetermined', requires_design_decision: false, evidence: 'chatter' },
+    title: 'Review follow-up', scope: 'No change', reason: 'Chatter.' })).resolves.toMatchObject({ decision: 'ignore' })
+  expect(h.runtime.engine.candidate(trigger.id)).toBeUndefined()
+  await expect(h.runTool(old, 'orchestrator_eval', { trigger_id: trigger.id })).rejects.toThrow()
 })
 
 it('routes an assessment that was still queued to the replacement', async () => {
@@ -351,6 +377,35 @@ it('restores a handoff recorded by the previous version', async () => {
   expect(h.runtime.store.get(KV.runtime.handoff)).toBeUndefined()
   const messages = h.agents.get(replacement)!.followup.mock.calls.flatMap(([message]) => message.content)
   expect(messages).toContainEqual({ type: 'text', text: 'Continue after restart.' })
+})
+
+it('recovers an opened candidate even when another evaluation must be requeued at startup', async () => {
+  const retained = feishu('1', '这个回归需要评估', { mentions: [] })
+  const stranded = feishu('2', '这个也是', { mentions: [] })
+  for (const trigger of [retained, stranded]) h.runtime.receive(trigger)
+  await h.runtime.idle()
+  const retainedThread = h.runtime.engine.candidate(retained.id)!.thread
+  const strandedThread = h.runtime.engine.candidate(stranded.id)!.thread
+  const now = new Date().toISOString()
+  retainedThread.evaluating!.delivered = now
+  strandedThread.evaluating!.delivered = now
+  strandedThread.evaluating!.drainOwnerSessionId = 'unavailable-old-router'
+  await h.stop()
+  h = await startRuntime(store => {
+    store.set(KV.runtime.masterId, 'restored-router')
+    store.saveSettings({ ...store.settings(), paused: true })
+    for (const trigger of [retained, stranded]) store.triggers.save(trigger)
+    for (const thread of [retainedThread, strandedThread]) store.threads.save(thread)
+  })
+  expect(h.runtime.store.settings().paused).toBe(true)
+  expect(h.runtime.engine.candidate(stranded.id)?.evalId).toBe(strandedThread.evaluating!.id)
+  expect(h.runtime.engine.candidate(stranded.id)?.thread.evaluating?.drainOwnerSessionId).toBeUndefined()
+  expect(h.agents.has('unavailable-old-router')).toBe(false)
+  expect(h.runtime.effects.pending('assessmentRecovery', retainedThread.evaluating!.id)).toBe(true)
+  await h.runtime.settings.pause(false, 'panel')
+  await h.runtime.idle()
+  expect(h.candidates()).toEqual([retained.id])
+  expect(h.runtime.effects.pending('assessment', strandedThread.evaluating!.id)).toBe(true)
 })
 
 it('rotates with the current host descendant API without listChildren', async () => {
