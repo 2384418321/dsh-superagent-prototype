@@ -30,7 +30,7 @@ function host(overrides: Partial<SourceContextDeps> = {}) {
   store.saveSettings(settings)
   const board = new HealthBoard()
   const sources = new SourceRegistry(() => store.settings(), board)
-  const deployment = testDeployment()
+  const deployment = overrides.deployment ?? testDeployment()
   sources.register(feishuKind); sources.register(githubKind)
   const assessor: Assessor = { request: vi.fn(async () => {}) }
   const executor: Executor = { start: vi.fn(async () => {}), deliver: vi.fn(async () => {}), stop: vi.fn(async () => {}) }
@@ -73,11 +73,11 @@ const notification = (number: number, kind: 'issues' | 'pulls' = 'issues') => ({
   repository: { full_name: 'acme/widgets' }, subject: { url: `https://api.github.com/repos/acme/widgets/${kind}/${number}`,
     type: kind === 'pulls' ? 'PullRequest' : 'Issue', title: '' } })
 const refused = (status: number, text: string) => commandError({ stderr: `gh: ${text} (HTTP ${status})`, code: 1 })
-/** Stubs `gh api` calls against `acme/widgets` and returns the requested paths in order. */
+/** Stubs `gh api` calls against the configured repository and returns the requested paths in order. */
 function github(h: ReturnType<typeof host>, routes: Record<string, unknown>): string[] {
   const reads: string[] = []
   vi.spyOn(h.commands, 'run').mockImplementation(async (_program, args) => {
-    reads.push(args[1]!.replace(/^repos\/acme\/widgets\//, ''))
+    reads.push(args[1]!.replace(`repos/${h.deployment.repository}/`, ''))
     const path = reads.at(-1)!.split('?')[0]!
     const list = /\/(comments|reviews|statuses)$/.test(path) ? [] : refused(404, 'Not Found')
     const route = routes[path] ?? (path.endsWith('/check-runs') ? { check_runs: [] } : list)
@@ -1274,6 +1274,54 @@ describe('observing the GitHub repository', () => {
     html_url: `https://github.com/acme/widgets/issues/${number}`, user: { login: 'carol', type: 'User' }, ...fields })
   const observe = (h: ReturnType<typeof host>, config: Record<string, boolean>) =>
     h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources, github: { enabled: true, config } } })
+  it.each(['notification', 'repository'])('stores HES-OA acceptance bookkeeping without routing it through the %s path', async path => {
+    const repo = '2384418321/Hes-OA'
+    const h = host({ deployment: testDeployment({ repository: repo }) })
+    const url = 'https://github.com/2384418321/HES-OA/issues/12'
+    const claim = '[hesoa-acceptance-claim/v1] client=codex session_id=session-1 claim_id=claim-1'
+    const accepted = `[hesoa-acceptance-lan/v1]\n${claim} state=finished\n\n`
+    const evidence = `LAN v2.5.20 ${'a'.repeat(40)}，2026-11-20T09:40:14+08:00。`
+    const comments = [
+      { body: `${claim} state=active\n\n${evidence}`, filtered: true },
+      { body: `${accepted}## LAN 验收通过\n\n${evidence}`, filtered: true },
+      { body: `${accepted}${evidence}\n\n验收通过。成功启动。`, filtered: true },
+      { body: `${accepted}## LAN 验收失败\n\n需要继续修。`, filtered: false },
+      { body: `${accepted}## LAN 验收通过\n\n@agent-bot 请继续修。`, filtered: false },
+      { body: `${accepted}## LAN 验收通过`, association: 'NONE', filtered: false },
+      { body: `> ${accepted}## LAN 验收通过`, filtered: false },
+      { body: accepted + '```\n## LAN 验收通过\n```', filtered: false },
+      { body: `${accepted}## LAN 验收通过\n\n## LAN 验收失败`, filtered: false },
+      { body: `${claim} state=active\n\n继续修复表单。`, filtered: false },
+      { body: `${accepted}## LAN 验收通过`, html: 'https://github.com/2384418321/HES-OA/pull/12', filtered: false },
+      { body: `${accepted}## LAN 验收通过`, html: 'https://github.com/other/repo/issues/12', filtered: false },
+      { body: '[hesoa-acceptance-claim/v1] state=active', filtered: false },
+      { body: '继续修复表单。', filtered: false },
+    ].map(({ body, association, html, filtered }, i) => ({ filtered, comment: { id: i + 1, body,
+      author_association: association ?? 'OWNER', created_at: at(1), updated_at: at(1), user: { login: 'alice', type: 'User' },
+      issue_url: `https://api.github.com/repos/${repo}/issues/12`, html_url: `${html ?? url}#issuecomment-${i + 1}` } }))
+    observe(h, { observeComments: true })
+    h.store.set(KV.github.since, at(0))
+    for (const stream of ['comments', 'review-comments']) {
+      h.store.set(`github-stream:${stream}`, { since: at(0), started: { comments: at(0) } })
+    }
+    const list = comments.map(item => item.comment)
+    github(h, {
+      notifications: path === 'notification' ? [{ ...notification(12), repository: { full_name: repo },
+        subject: { url: `https://api.github.com/repos/${repo}/issues/12` } }] : [],
+      'issues/12': issue(12, { html_url: url, created_at: at(-1) }),
+      'issues/12/comments': path === 'notification' ? list : [],
+      'issues/comments': path === 'repository' ? list : [],
+      'pulls/comments': [],
+    })
+    try {
+      await pollRound(h)
+      const received = h.receive.mock.calls.map(([trigger]) => ({ id: trigger.meta.commentId,
+        reason: h.store.triggers.disposition(trigger.id)?.filtered?.code ?? null,
+        stored: h.store.triggers.get(trigger.id)?.text === trigger.text }))
+      expect(received).toEqual(comments.map(({ comment, filtered }) => ({ id: comment.id,
+        reason: filtered ? 'hesoa_acceptance_record' : null, stored: true })))
+    } finally { h.store.close() }
+  })
   /** GitHub as the repository's lists and its default branch answer; a request with the ETag of an unchanged list answers 304. */
   function repository(h: ReturnType<typeof host>, answers: { issues?: unknown[]; comments?: unknown[]; reviewComments?: unknown[];
     branch?: { sha: string; checks: unknown[] } }) {

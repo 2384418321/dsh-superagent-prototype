@@ -500,6 +500,37 @@ it('treats GitHub comments through the same gate: mentions by members are explic
   expect(runtime.store.tickets.get(ticket.id)!.inputs).toEqual([expect.objectContaining({ triggerId: 'ci-1' })])
 })
 
+it('keeps a recorded LAN pass in history without waking its ended HES-OA ticket', async () => {
+  const repository = '2384418321/HES-OA'
+  const settings = runtime.store.settings()
+  runtime.store.saveSettings({ ...settings, sources: { ...settings.sources,
+    github: { ...settings.sources.github!, config: { ...settings.sources.github!.config, repository } } } })
+  const { ticket, sessionId } = await acceptedTicket()
+  subscribe(ticket.id, { source: 'github', id: '23' })
+  await runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'Done.' })
+  const before = runtime.store.tickets.get(ticket.id)!
+  expect(before.ended?.outcome).toBe('completed')
+
+  const record = commentTrigger({ id: 23, user: { login: 'alice', type: 'User' }, author_association: 'OWNER',
+    created_at: '2026-09-09T00:03:00Z', html_url: 'https://github.com/2384418321/HES-OA/issues/23#issuecomment-23',
+    body: '[hesoa-acceptance-lan/v1]\n[hesoa-acceptance-claim/v1] client=codex session_id=s1 claim_id=c1 state=finished\n\n## LAN 验收通过' },
+  { number: 23, isPr: false }, 'conversation', 'agent-bot', repository)
+  expect(await receive(record)).toBe('filtered')
+  expect(runtime.store.triggers.get(record.id)).toMatchObject({ text: record.text, human: true })
+  expect(runtime.store.triggers.disposition(record.id)).toMatchObject({ filtered: { code: 'hesoa_acceptance_record' }, fanout: [] })
+  expect(runtime.store.tickets.get(ticket.id)).toEqual(before)
+  expect(runtime.store.threads.get('github:23')).toMatchObject({ pending: [], subscriptions: [ticket.id] })
+
+  const followup = commentTrigger({ id: 24, user: { login: 'alice', type: 'User' }, author_association: 'OWNER',
+    created_at: '2026-09-09T00:04:00Z', html_url: 'https://github.com/2384418321/HES-OA/issues/23#issuecomment-24',
+    body: '@agent-bot 请修复新发现的问题。' }, { number: 23, isPr: false }, 'conversation', 'agent-bot', repository)
+  expect(await receive(followup)).toBe('stored')
+  expect(runtime.store.tickets.get(ticket.id)).toMatchObject({ inputs: [
+    { kind: 'trigger', triggerId: followup.id }, { kind: 'resumed', triggerId: followup.id },
+  ] })
+  expect(runtime.store.tickets.get(ticket.id)?.ended).toBeUndefined()
+})
+
 it('relays an allowed sender\'s mention in a new Issue as an explicit candidate from the poll that reads its notification', async () => {
   const issue = { id: 1012, number: 12, title: 'Login fails', body: '@agent-bot please fix the login', state: 'open',
     created_at: '2026-09-09T00:00:00Z', html_url: 'https://github.com/acme/widgets/issues/12', user: { login: 'alice', type: 'User' } }

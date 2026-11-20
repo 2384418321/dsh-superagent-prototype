@@ -25,6 +25,7 @@ export const UserSchema = z.looseObject({ login: z.string(), type: z.string().op
  */
 export const CommentSchema = z.looseObject({
   id: z.number(), body: z.string().nullish(), user: UserSchema, html_url: z.string().nullish(),
+  author_association: z.string().nullish(),
   created_at: z.string().nullish(), updated_at: z.string().nullish(), submitted_at: z.string().nullish(),
   state: z.string().nullish(), commit_id: z.string().nullish(),
   path: z.string().nullish(), line: z.number().nullish(), original_line: z.number().nullish(), diff_hunk: z.string().nullish(),
@@ -61,17 +62,35 @@ export const mentions = (text: string, login: string): boolean =>
   new RegExp(`(?:^|[^a-zA-Z0-9_@])@${escapeRegExp(login)}(?![a-zA-Z0-9_-])`, 'i').test(text)
 const author = (user: { login: string; type?: string }, agent: string) =>
   ({ actor: { source: SOURCE, id: user.login }, human: isHumanLogin(user) && !sameName(user.login, agent) })
+const ACCEPTANCE_CLAIM = /^\[hesoa-acceptance-claim\/v1\] client=[\w.-]+ session_id=[\w.:-]+ claim_id=[\w.:-]+ state=(active|finished)$/
+const LAN_BUILD = /^LAN v\d+\.\d+\.\d+ [a-f\d]{40}(?:$|[^\w])/i
+/** Only trusted Issue bookkeeping is retained without waking the HES-OA ticket. */
+function acceptanceRecord(comment: GithubComment, ref: PullRef, repository: string): boolean {
+  if (!sameName(repository, '2384418321/HES-OA') || ref.isPr || !isHumanLogin(comment.user)
+    || !['OWNER', 'MEMBER', 'COLLABORATOR'].includes(comment.author_association ?? '')) return false
+  const issue = githubAddress(comment.html_url ?? '', repository)
+  if (!issue || issue.pr || issue.number !== ref.number) return false
+  const [header = '', ...body] = (comment.body ?? '').split(/\r?\n/)
+  const details = body.filter(line => line.trim())
+  if (ACCEPTANCE_CLAIM.exec(header)?.[1] === 'active') return !details.length || (details.length === 1 && LAN_BUILD.test(details[0]!))
+  if (header !== '[hesoa-acceptance-lan/v1]' || ACCEPTANCE_CLAIM.exec(body[0] ?? '')?.[1] !== 'finished') return false
+  const verdict = details[LAN_BUILD.test(details[1] ?? '') ? 2 : 1] ?? ''
+  return /^(?:## LAN 验收通过\s*$|验收通过[。！.!])/.test(verdict)
+    && !details.some(line => /^(?:#{1,6} +)?(?:LAN )?验收(?:失败|不通过|未通过|受阻)/.test(line))
+}
 /** Builds a trigger for a comment or review; text is empty for a bodyless comment or a `COMMENTED` review without a body. */
-export function commentTrigger(comment: GithubComment, ref: PullRef, kind: 'conversation' | 'inline' | 'review', agent: string): Trigger {
+export function commentTrigger(comment: GithubComment, ref: PullRef, kind: 'conversation' | 'inline' | 'review', agent: string, repository = ''): Trigger {
   const at = comment.updated_at ?? comment.submitted_at ?? comment.created_at ?? new Date().toISOString()
   const version = comment.updated_at ?? comment.submitted_at ?? ''
   const id = key('github-comment', comment.html_url ?? `github:${ref.number}`, String(comment.id), version)
+  const addressed = mentions(comment.body ?? '', agent)
   return { id, source: SOURCE, threads: [{ source: SOURCE, id: String(ref.number) }], ...author(comment.user, agent), at,
     text: commentText(comment, kind),
-    ...(mentions(comment.body ?? '', agent) ? { addressed: 'mention' as const } : {}),
+    ...(addressed ? { addressed: 'mention' as const } : {}),
     channel: githubChannel(ref.number, comment.html_url ?? undefined),
     ...(comment.html_url ?? ref.url ? { url: comment.html_url ?? ref.url } : {}),
     meta: { number: ref.number, isPr: ref.isPr, ...(ref.prAuthor ? { prAuthor: ref.prAuthor } : {}), commentId: comment.id, kind,
+      ...(!addressed && kind === 'conversation' && acceptanceRecord(comment, ref, repository) ? { hesoaAcceptanceRecord: true } : {}),
       ...comment.path ? { path: comment.path, line: comment.line ?? comment.original_line ?? null } : {},
       ...comment.in_reply_to_id ? { inReplyTo: comment.in_reply_to_id } : {} } }
 }

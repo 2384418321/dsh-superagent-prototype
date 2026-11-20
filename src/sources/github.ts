@@ -71,6 +71,7 @@ export const githubKind: SourceKind<GithubConfig> = {
       hint: { zh: '0 表示不限。', en: '0 disables the ceiling.' } }],
   // What the Source observes across the repository it receives in full; elsewhere, only what addresses the agent.
   scope: ({ meta }, config) => {
+    if (meta.hesoaAcceptanceRecord === true) return { listened: false, reason: 'hesoa_acceptance_record' }
     const row = scopeOf(meta)
     return { listened: true, observed: row !== undefined && config[OBSERVED[row]], ...row ? { row } : {} }
   },
@@ -254,7 +255,7 @@ async function readStream(ctx: SourceContext, round: Round, id: string, path: st
     if (!number || !fresh(item.updated_at ?? item.created_at, 'comments')) continue
     const isPr = id === 'review-comments' || /\/pull\//.test(item.html_url ?? '')
     const ref = { number, isPr, ...item.html_url ? { url: item.html_url } : {} }
-    const trigger = commentTrigger(item, ref, id === 'comments' ? 'conversation' : 'inline', login)
+    const trigger = commentTrigger(item, ref, id === 'comments' ? 'conversation' : 'inline', login, ctx.deployment.repository)
     if (trigger.text) await ctx.receive(trigger)
   }
   const newest = Math.max(...items.map(item => Date.parse(item.updated_at ?? '')).filter(Number.isFinite))
@@ -413,7 +414,7 @@ async function intakeComments(ctx: SourceContext, ref: PullRef, since: string, r
       if (!Number.isFinite(timestamp) || timestamp < Date.parse(since)) continue
       if (sameName(comment.user.login, login)) continue
       // A review decision without a body still reaches the ticket: a worker may be waiting for that approval.
-      const trigger = commentTrigger(comment, ref, kind, login)
+      const trigger = commentTrigger(comment, ref, kind, login, ctx.deployment.repository)
       if (trigger.text) await ctx.receive(trigger)
     }
   }

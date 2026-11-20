@@ -629,6 +629,7 @@ const TEXT = {
   'reason.source_disabled': ['来源已停用', 'Source disabled'],
   'reason.issue_sender_or_admission_disabled': ['Issue 发起人不在名单或主动接单已关闭', 'Issue sender not on the list, or proactive accept off'],
   'reason.source_not_installed': ['来源插件未加载', 'Source plugin not loaded'],
+  'reason.hesoa_acceptance_record': ['HES-OA 验收记录', 'HES-OA acceptance record'],
   'reason.issue_unclaimed_less_than_wait': ['Issue 无人认领未满等待时长', 'Issue unclaimed for less than the wait'],
   // Glossary
   glossary: ['术语表', 'Glossary'],

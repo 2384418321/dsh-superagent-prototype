@@ -591,6 +591,7 @@ declare const CommentSchema: z.ZodObject<{
     type?: string | undefined;
   } | null>>;
   html_url: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+  author_association: z.ZodOptional<z.ZodNullable<z.ZodString>>;
   created_at: z.ZodOptional<z.ZodNullable<z.ZodString>>;
   updated_at: z.ZodOptional<z.ZodNullable<z.ZodString>>;
   submitted_at: z.ZodOptional<z.ZodNullable<z.ZodString>>;
@@ -610,7 +611,7 @@ interface PullRef {
   prAuthor?: string;
 }
 /** Builds a trigger for a comment or review; text is empty for a bodyless comment or a `COMMENTED` review without a body. */
-declare function commentTrigger(comment: GithubComment, ref: PullRef, kind: 'conversation' | 'inline' | 'review', agent: string): Trigger;
+declare function commentTrigger(comment: GithubComment, ref: PullRef, kind: 'conversation' | 'inline' | 'review', agent: string, repository?: string): Trigger;
 //#endregion
 //#region src/sources/github.d.ts
 declare const GithubConfigSchema: z.ZodObject<{
