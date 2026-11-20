@@ -153,7 +153,7 @@ function routeTool(host: MainToolsHost): Tool {
 }
 /** Builds the main Session's tools; `agent` scopes prompt preview resources to that Session. */
 export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
-  const resources: MainResourceHost = { ...host.resources, sessions: host.sessions, settings: host.settings }
+  const resources: MainResourceHost = { ...host.resources, masterId: agent.id, sessions: host.sessions, settings: host.settings }
   return [
     readTool('Read one page of a resource the resource parameter lists, such as the ticket list or a ticket. Follow next_offset, and next_resource where a page names one.',
       false, (resource, offset, limit, signal) => readResource(resources, resource, offset, limit, undefined, signal)),

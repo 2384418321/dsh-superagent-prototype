@@ -1,6 +1,7 @@
 /** Root panel shell: header with global search and glossary, top-level navigation tabs, and active route view. */
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { ApiError, type SearchView } from './api.ts'
+import { MASTER_ROTATION_ERRORS } from '../app/api.ts'
 import { Button, Dot, Icon, Input, Modal, SegmentedTabs } from './controls.tsx'
 import type { DeploymentForm } from './deployment.tsx'
 import { EvalStatus } from './eval.tsx'
@@ -99,7 +100,8 @@ function SearchResults({ result, query, onClose }: { result: SearchView; query: 
 }
 
 function Header({ masterId }: { masterId: string | undefined }) {
-  const { t, call, openSession, notify, restart } = usePanel()
+  const { t, call, openSession, notify } = usePanel()
+  const { reload } = usePanelData()
   const [glossary, setGlossary] = useState(false)
   const [query, setQuery] = useState('')
   const [result, setResult] = useState<{ query: string; value: SearchView }>()
@@ -138,10 +140,14 @@ function Header({ masterId }: { masterId: string | undefined }) {
           try {
             await call('POST master/rotate', { body: { expectedMasterId: masterId, handoff: t('rotateMasterHandoff', { id: masterId }), manageProcessing: true } })
           } catch (error) {
-            if (error instanceof ApiError && error.status === 409) throw new Error(t('rotateMasterBlocked'))
+            if (error instanceof ApiError && error.status === 409) {
+              const reason = MASTER_ROTATION_ERRORS.find(code => code === error.message)
+              throw new Error(reason ? t(`rotateError.${reason}`) : t('rotateMasterBlocked'))
+            }
             throw error
           }
-          restart(); notify(t('rotateMasterStarted'))
+          void reload()
+          notify(t('rotateMasterStarted'))
         }} />}
     </div>
     <Glossary open={glossary} onClose={() => setGlossary(false)} />

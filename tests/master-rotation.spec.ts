@@ -1,13 +1,49 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { KV } from '../src/kv.ts'
-import { Runtime } from '../src/app/runtime.ts'
-import { Context } from '@deepseek-ai/cordis'
-import { startRuntime, type Host } from './fixtures/host.ts'
-import { testMachine } from './fixtures/deployment.ts'
+import { feishu, startRuntime, type Host } from './fixtures/host.ts'
+import { deferred } from './fixtures/async.ts'
 
 let h: Host
 beforeEach(async () => { h = await startRuntime() })
 afterEach(async () => { await h.stop() })
+
+it('rotates the main session without interrupting a running worker or its background work', async () => {
+  const { ticket, sessionId } = await h.acceptedTicket(feishu('1', '@bot 修复回归'))
+  const old = h.runtime.masterId
+  const previous = h.agents.get(old)!
+  previous.status = 'idle'
+  previous.inbox.nextTurn.length = 0
+  previous.inbox.nextStep.length = 0
+  const worker = h.agents.get(sessionId)!
+  expect(worker.status).toBe('running')
+  const job = h.jobs.run(sessionId)
+  const child = h.subagents.spawn(sessionId)
+  const assignment = h.runtime.store.tickets.get(ticket.id)!.assignments.at(-1)
+  const restart = vi.spyOn(h.runtime.setup, 'restart')
+
+  const preparing = deferred(), release = deferred()
+  h.controller.rename.mockImplementationOnce(async () => { preparing.resolve(); await release.promise })
+  const rotation = h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue.', manageProcessing: true })
+  const phase = await Promise.race([preparing.promise.then(() => 'preparing'), rotation.then(() => 'completed')])
+  try {
+    expect(phase).toBe('preparing')
+    h.runtime.engine.note(ticket.id, 'Continue working during the main Session handoff.')
+    await h.runtime.effects.idle('delivery')
+    expect(h.deliveries.mock.calls.some(([call]) => call.sessionId === sessionId && call.text.includes('Continue working during'))).toBe(true)
+  } finally { release.resolve() }
+  const response = await rotation
+  expect(response.status, JSON.stringify(response.body)).toBe(200)
+  await h.runtime.idle()
+
+  expect(h.runtime.masterId).toBe(response.body.masterId)
+  expect(restart).not.toHaveBeenCalled()
+  expect(h.agents.get(sessionId)).toBe(worker)
+  expect(worker.status).toBe('running')
+  expect(worker.cancel).not.toHaveBeenCalled()
+  expect(h.runtime.store.tickets.get(ticket.id)!.assignments).toEqual([expect.objectContaining({ ...assignment, deliveredAt: expect.any(String) })])
+  expect(h.jobs.service.list(sessionId)).toContainEqual(expect.objectContaining({ id: job, status: 'running' }))
+  expect(h.subagents.live(child)).toBe(true)
+})
 
 it('binds the existing idle router session instead of creating a second replacement', async () => {
   await h.runtime.settings.pause(true, 'panel')
@@ -26,16 +62,13 @@ it('binds the existing idle router session instead of creating a second replacem
   expect(response.status).toBe(200)
   expect(response.body.masterId).toBe(target)
   expect(h.runtime.store.get(KV.runtime.masterId)).toBe(target)
-  await h.runtime.stop()
-  const ctx = new Context()
-  for (const name of ['agents', 'llm', 'sessionController', 'sessionPersistence', 'workspaceRegistry', 'permissionPresets', 'subprocess', 'webServer', 'jobs', 'subagents'])
-    ctx.reflect.provide(name, h.ctx.get(name))
-  const next = new Runtime(ctx, testMachine({ stateDir: h.directory }), vi.fn())
-  try {
-    await next.ready
-    expect(next.masterId).toBe(target)
-    expect(h.deliveries.mock.calls.some(([call]) => call.sessionId === target && String(call.text).includes('Continue the queue.'))).toBe(true)
-  } finally { await next.stop() }
+  await h.runtime.idle()
+  expect((await h.api('GET', 'state')).body.masterId).toBe(target)
+  expect(h.deliveries.mock.calls.map(([call]) => [call.sessionId, call.text])).toContainEqual([target, 'Continue the queue.'])
+  expect(h.agents.get(target)).toBe(agent)
+  expect(h.agents.has(old)).toBe(true)
+  expect(h.tools.get(old)?.has('orchestrator_route')).toBe(false)
+  expect(h.tools.get(target)?.has('orchestrator_route')).toBe(true)
 })
 
 it('refuses unknown and non-router replacement sessions', async () => {
@@ -57,7 +90,7 @@ it('refuses rotation until dispatch is paused and the main session is idle', asy
   expect(h.runtime.store.get(KV.runtime.masterId)).toBe(old)
 })
 
-it('restores processing if a panel-initiated switch finds running work', async () => {
+it('keeps processing enabled when the old main session is running', async () => {
   await h.runtime.idle()
   const old = h.runtime.masterId
   h.agents.get(old)!.status = 'running'
@@ -68,16 +101,20 @@ it('restores processing if a panel-initiated switch finds running work', async (
   h.agents.get(old)!.status = 'idle'
 })
 
-it('restores processing if pausing fails after the setting was saved', async () => {
-  await h.runtime.idle()
+it('keeps the old main session active if preparing the replacement fails', async () => {
   const old = h.runtime.masterId
-  h.agents.get(old)!.status = 'idle'
-  const pause = h.runtime.settings.pause.bind(h.runtime.settings)
-  vi.spyOn(h.runtime.settings, 'pause').mockImplementationOnce(async () => { await pause(true, 'tool'); throw new Error('delivery failed') })
+  h.controller.rename.mockRejectedValueOnce(new Error('Could not prepare router'))
   const response = await h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue.', manageProcessing: true })
   expect(response.status).toBe(500)
   expect(h.runtime.store.settings().paused).toBe(false)
-  expect(h.runtime.store.get(KV.runtime.masterId)).toBe(old)
+  expect(h.runtime.masterId).toBe(old)
+  expect(h.runtime.store.get(KV.runtime.handoff)).toBeUndefined()
+  expect(h.tools.get(old)?.has('orchestrator_route')).toBe(true)
+  const candidate = [...h.agents.keys()].find(id => id !== old)
+  if (candidate) expect(h.tools.get(candidate)?.has('orchestrator_route')).not.toBe(true)
+  h.runtime.sessions.relay('preparation-failed', 'Still routed to the old session')
+  await h.runtime.idle()
+  expect(h.deliveries.mock.calls.some(([call]) => call.sessionId === old && call.text === 'Still routed to the old session')).toBe(true)
 })
 
 it('rejects a stale main identity', async () => {
@@ -110,18 +147,17 @@ it('refuses to interrupt a background job owned by the main session', async () =
   expect(h.runtime.store.get(KV.runtime.masterId)).toBe(old)
 })
 
-it('cancels rotation without restarting if a session becomes active while draining', async () => {
+it('cancels rotation if the old main session becomes active during preparation', async () => {
   await h.runtime.settings.pause(true, 'panel')
   await h.runtime.idle()
   const old = h.runtime.masterId
   const agent = h.agents.get(old)!
-  agent.status = 'idle'
-  const drain = h.runtime.effects.drain.bind(h.runtime.effects)
-  vi.spyOn(h.runtime.effects, 'drain').mockImplementationOnce(async () => { await drain(); agent.status = 'running' })
+  h.controller.rename.mockImplementationOnce(async () => { agent.status = 'running' })
   const response = await h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue.' })
   expect(response.status).toBe(409)
   expect(h.runtime.store.get(KV.runtime.masterId)).toBe(old)
   expect(agent.status).toBe('running')
+  expect(agent.cancel).not.toHaveBeenCalled()
   agent.status = 'idle'
   h.runtime.sessions.relay('after-cancel', 'Still running')
   await h.runtime.idle()
@@ -140,6 +176,41 @@ it('does not strand unconsumed messages in the old main inbox', async () => {
   expect(h.runtime.store.get(KV.runtime.masterId)).toBe(old)
 })
 
+it('keeps an already offered assessment with the old main session', async () => {
+  const old = h.runtime.masterId
+  const trigger = feishu('1', '@bot 查一下回归')
+  h.runtime.receive(trigger)
+  await h.runtime.idle()
+  expect(h.candidates()).toEqual([trigger.id])
+  const evaluation = h.runtime.store.threads.active().find(thread => thread.evaluating?.triggerIds.includes(trigger.id))!.evaluating!
+  expect(evaluation.offeredAt).toBeDefined()
+  expect(evaluation.delivered).toBeUndefined()
+  const oldAgent = h.agents.get(old)!
+  oldAgent.status = 'idle'
+  oldAgent.inbox.nextStep.length = 0
+  const response = await h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue.', manageProcessing: true })
+  expect(response.status).toBe(409)
+  expect(h.runtime.masterId).toBe(old)
+  expect(h.runtime.store.threads.active().find(thread => thread.evaluating?.id === evaluation.id)?.evaluating).toEqual(evaluation)
+})
+
+it('routes an assessment that was still queued to the replacement', async () => {
+  await h.runtime.settings.pause(true, 'panel')
+  const old = h.runtime.masterId
+  const trigger = feishu('1', '@bot 查一下回归')
+  h.runtime.receive(trigger)
+  await h.runtime.idle()
+  expect(h.candidates()).toEqual([])
+  const response = await h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue.' })
+  expect(response.status).toBe(200)
+  await h.runtime.settings.pause(false, 'panel')
+  await h.runtime.idle()
+  expect(h.deliveries.mock.calls.map(([call]) => call)).toEqual([
+    expect.objectContaining({ sessionId: response.body.masterId, text: 'Continue.' }),
+    expect.objectContaining({ sessionId: response.body.masterId, text: expect.stringContaining(trigger.id) }),
+  ])
+})
+
 it('preserves pending orchestrator notices in the handoff', async () => {
   await h.runtime.settings.pause(true, 'panel')
   await h.runtime.idle()
@@ -149,99 +220,108 @@ it('preserves pending orchestrator notices in the handoff', async () => {
   agent.inbox.nextStep.push({ id: 'notice', role: 'user', content: [{ type: 'text', text: 'Ticket #3438 ended.' }], source: { kind: 'dsh-superagent', form: 'notice' } } as never)
   const response = await h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue.' })
   expect(response.status).toBe(200)
-  expect(h.runtime.store.get(KV.runtime.handoff)?.text).toContain('Ticket #3438 ended.')
+  await h.runtime.idle()
+  expect(h.deliveries.mock.calls.find(([call]) => call.sessionId === response.body.masterId)?.[0].text).toContain('Ticket #3438 ended.')
+  expect(agent.inbox.nextStep).toEqual([])
 })
 
-it('starts the replacement as the actual main session after restart', async () => {
-  await h.runtime.settings.pause(true, 'panel')
-  await h.runtime.idle()
+it('delivers the handoff before relays queued during cutover', async () => {
   const old = h.runtime.masterId
-  h.agents.get(old)!.status = 'idle'
-  const response = await h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue the existing queue.', manageProcessing: true })
-  expect(response.status).toBe(200)
-  await h.runtime.stop()
-  const ctx = new Context()
-  for (const name of ['agents', 'llm', 'sessionController', 'sessionPersistence', 'workspaceRegistry', 'permissionPresets', 'subprocess', 'webServer', 'jobs', 'subagents'])
-    ctx.reflect.provide(name, h.ctx.get(name))
-  const next = new Runtime(ctx, testMachine({ stateDir: h.directory }), vi.fn())
+  const draining = deferred(), release = deferred()
+  const idle = h.runtime.effects.idle.bind(h.runtime.effects)
+  vi.spyOn(h.runtime.effects, 'idle').mockImplementationOnce(async kind => {
+    draining.resolve()
+    await release.promise
+    await idle(kind)
+  })
+  const rotation = h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue.', manageProcessing: true })
+  await Promise.race([draining.promise, rotation])
   try {
-    await next.ready
-    expect(next.masterId).toBe(response.body.masterId)
-    expect(next.store.settings().paused).toBe(true)
-    expect(h.agents.has(next.masterId)).toBe(true)
-    await next.idle()
-    expect(next.store.get(KV.runtime.handoff)).toBeUndefined()
-    expect(h.deliveries.mock.calls.some(([call]) => call.sessionId === next.masterId && String(call.text).includes('Continue the existing queue.'))).toBe(true)
-  } finally { await next.stop() }
+    h.runtime.sessions.relay('during-rotation', 'Newly queued work')
+    await h.runtime.effects.idle('relay')
+    expect(h.runtime.effects.pending('relay', 'during-rotation')).toBe(true)
+    expect(h.deliveries.mock.calls).toHaveLength(0)
+    expect(h.runtime.store.settings().paused).toBe(false)
+  } finally { release.resolve() }
+  const response = await rotation
+  expect(response.status).toBe(200)
+  await h.runtime.idle()
+  expect(h.deliveries.mock.calls.map(([call]) => [call.sessionId, call.text])).toEqual([
+    [response.body.masterId, 'Continue.'], [response.body.masterId, 'Newly queued work'],
+  ])
+  expect(h.runtime.store.get(KV.runtime.handoff)).toBeUndefined()
 })
 
-it('resumes processing after a panel-initiated switch has delivered its handoff', async () => {
-  await h.runtime.idle()
+it('retains the handoff after a persistence failure and recovers without a duplicate message', async () => {
   const old = h.runtime.masterId
-  h.agents.get(old)!.status = 'idle'
+  const flush = vi.mocked(h.ctx.get('sessionPersistence')!.flush)
+  flush.mockImplementation(async () => {
+    if (h.deliveries.mock.calls.some(([call]) => call.text === 'Continue safely.')) throw new Error('disk unavailable')
+  })
+  const response = await h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue safely.', manageProcessing: true })
+  expect(response.status).toBe(200)
+  const target = response.body.masterId as string
+  h.runtime.sessions.relay('after-failed-handoff', 'Waiting work')
+  await h.runtime.idle()
+  expect(h.runtime.store.get(KV.runtime.handoff)).toMatchObject({ masterId: target, text: 'Continue safely.' })
+  // The first handoff turn can use its tools while a persistence retry still holds later automatic deliveries.
+  await expect(h.runTool(target, 'orchestrator_read', { resource: 'tickets' })).resolves.toBeDefined()
+  expect(h.deliveries.mock.calls.map(([call]) => [call.sessionId, call.text])).toEqual([[target, 'Continue safely.']])
+  expect((await h.api('POST', 'master/rotate', { expectedMasterId: target, handoff: 'Replace again.', manageProcessing: true })).status).toBe(409)
+  flush.mockResolvedValue(undefined)
+  h.runtime.store.db.prepare("UPDATE effect SET due = 0 WHERE kind = 'handoff'").run()
+  await h.runtime.idle()
+  expect(h.runtime.store.get(KV.runtime.handoff)).toBeUndefined()
+  expect(h.deliveries.mock.calls.map(([call]) => [call.sessionId, call.text])).toEqual([
+    [target, 'Continue safely.'], [target, 'Waiting work'],
+  ])
+})
+
+it('preserves a pause applied by the operator while a replacement is being prepared', async () => {
+  const old = h.runtime.masterId
+  h.controller.rename.mockImplementationOnce(async () => { await h.runtime.settings.pause(true, 'panel') })
   const response = await h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue.', manageProcessing: true })
   expect(response.status).toBe(200)
-  await h.runtime.stop()
-  const ctx = new Context()
-  for (const name of ['agents', 'llm', 'sessionController', 'sessionPersistence', 'workspaceRegistry', 'permissionPresets', 'subprocess', 'webServer', 'jobs', 'subagents'])
-    ctx.reflect.provide(name, h.ctx.get(name))
-  const next = new Runtime(ctx, testMachine({ stateDir: h.directory }), vi.fn())
-  try {
-    await next.ready
-    expect(next.store.settings().paused).toBe(false)
-    expect(h.deliveries.mock.calls.some(([call]) => call.sessionId === next.masterId && call.text.includes('Continue.'))).toBe(true)
-  } finally { await next.stop() }
+  await h.runtime.idle()
+  expect(h.runtime.store.settings().paused).toBe(true)
 })
 
-it('does not override a pause changed while rotation was pending', async () => {
-  await h.runtime.idle()
-  const old = h.runtime.masterId
-  h.agents.get(old)!.status = 'idle'
-  const response = await h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue.', manageProcessing: true })
-  expect(response.status).toBe(200)
-  await h.runtime.settings.pause(false, 'tool')
-  await h.runtime.settings.pause(true, 'tool')
-  await h.runtime.stop()
-  const ctx = new Context()
-  for (const name of ['agents', 'llm', 'sessionController', 'sessionPersistence', 'workspaceRegistry', 'permissionPresets', 'subprocess', 'webServer', 'jobs', 'subagents'])
-    ctx.reflect.provide(name, h.ctx.get(name))
-  const next = new Runtime(ctx, testMachine({ stateDir: h.directory }), vi.fn())
-  try { await next.ready; expect(next.store.settings().paused).toBe(true) } finally { await next.stop() }
+it('uses a distinct handoff when a previously used router is selected again', async () => {
+  const original = h.runtime.masterId
+  const second = 'existing-router'
+  await h.ctx.sessionController.create({ sessionId: second as never, workspaceId: h.directory as never, agentPreset: 'dsh-superagent-router' })
+  for (const id of [original, second]) {
+    const agent = h.agents.get(id)!
+    Object.assign((agent as unknown as { session: object }).session, { header: { agentPreset: 'dsh-superagent-router' } })
+  }
+  for (const [from, to, handoff] of [[original, second, 'First.'], [second, original, 'Return.'], [original, second, 'Again.']] as const) {
+    const fromAgent = h.agents.get(from)!
+    fromAgent.status = 'idle'
+    // The fake inbox retains claimed messages; finishing a turn clears the consumed handoff.
+    fromAgent.inbox.nextTurn.length = 0
+    const response = await h.api('POST', 'master/rotate', { expectedMasterId: from, targetMasterId: to, handoff, manageProcessing: true })
+    expect(response.status).toBe(200)
+    await h.runtime.idle()
+  }
+  const sentToSecond = h.deliveries.mock.calls.map(([call]) => call).filter(call => call.sessionId === second)
+  expect(sentToSecond.map(call => call.text)).toEqual(['First.', 'Again.'])
+  expect(sentToSecond[0]?.id).not.toBe(sentToSecond[1]?.id)
 })
 
-it('retains the handoff if replacement startup cannot persist its inbox', async () => {
-  await h.runtime.settings.pause(true, 'panel')
+it('restores a handoff recorded by the previous version', async () => {
+  await h.stop()
+  const replacement = 'legacy-router'
+  h = await startRuntime(store => {
+    store.set(KV.runtime.masterId, replacement)
+    store.set(KV.runtime.handoff, { masterId: replacement, text: 'Continue after restart.' })
+    store.saveSettings({ ...store.settings(), paused: true })
+  })
   await h.runtime.idle()
-  const old = h.runtime.masterId
-  h.agents.get(old)!.status = 'idle'
-  const response = await h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue safely.' })
-  expect(response.status).toBe(200)
-  await h.runtime.stop()
-  const ctx = new Context()
-  for (const name of ['agents', 'llm', 'sessionController', 'sessionPersistence', 'workspaceRegistry', 'permissionPresets', 'subprocess', 'webServer', 'jobs', 'subagents'])
-    ctx.reflect.provide(name, h.ctx.get(name))
-  const persistence = h.ctx.get('sessionPersistence')!
-  vi.mocked(persistence.flush).mockRejectedValueOnce(new Error('disk unavailable'))
-  const next = new Runtime(ctx, testMachine({ stateDir: h.directory }), vi.fn())
-  try {
-    await expect(next.ready).rejects.toThrow('disk unavailable')
-    expect(next.store.get(KV.runtime.handoff)).toEqual({ masterId: response.body.masterId, text: 'Continue safely.' })
-  } finally { await next.stop() }
-})
-
-it('keeps queued effects and records a new main session for restart', async () => {
-  await h.runtime.settings.pause(true, 'panel')
-  await h.runtime.idle()
-  const old = h.runtime.masterId
-  const agent = h.agents.get(old)!
-  agent.status = 'idle'
-  h.runtime.sessions.relay('rotation-test', 'Preserve this queued item')
-  h.runtime.store.db.prepare('UPDATE effect SET due = ? WHERE kind = ? AND key = ?').run(Date.now() + 60000, 'relay', 'rotation-test')
-  const response = await h.api('POST', 'master/rotate', { expectedMasterId: old, handoff: 'Continue the existing queue.' })
-  expect(response.status).toBe(200)
-  expect(response.body.masterId).not.toBe(old)
-  expect(h.runtime.store.get(KV.runtime.masterId)).toBe(response.body.masterId)
-  expect(h.runtime.effects.pending('relay', 'rotation-test')).toBe(true)
+  expect(h.runtime.masterId).toBe(replacement)
+  expect(h.runtime.store.settings().paused).toBe(true)
+  expect(h.runtime.store.get(KV.runtime.handoff)).toBeUndefined()
+  const messages = h.agents.get(replacement)!.followup.mock.calls.flatMap(([message]) => message.content)
+  expect(messages).toContainEqual({ type: 'text', text: 'Continue after restart.' })
 })
 
 it('rotates with the current host descendant API without listChildren', async () => {
