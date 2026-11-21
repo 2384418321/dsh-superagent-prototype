@@ -354,7 +354,12 @@ it('lists each ticket with the Threads it subscribes to, as their Sources descri
   const { sessionId, ticket } = await acceptedTicket()
   await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'pr open', pr_number: 42 })
   const line = () => ticketList(viewsOf(runtime), 'working', 0, 20).items.find(item => item.id === ticket.id)!
-  runtime.store.threads.describe('github:42', { label: '#42 Fix the margin', facts: { number: { value: '#42' }, ci: { label: 'CI', value: { zh: '通过', en: 'passed' } } } })
+  const pull = expect.objectContaining({
+    key: 'github:42', url: 'https://github.com/acme/widgets/pull/42', facts: { number: { value: '#42' } },
+  })
+  expect(line().threads).toContainEqual(pull)
+  expect(ticketDetail(viewsOf(runtime), ticket.id)?.threads).toContainEqual(pull)
+  runtime.store.threads.describe('github:42', { label: '#42 Fix the margin', facts: { ci: { label: 'CI', value: { zh: '通过', en: 'passed' } } } })
   expect(line()).not.toHaveProperty('prNumber')
   expect(line().threads).toContainEqual(expect.objectContaining({ key: 'github:42', source: 'github', title: '#42 Fix the margin', facts: { number: { value: '#42' }, ci: { label: 'CI', value: { zh: '通过', en: 'passed' } } } }))
   runtime.store.threads.describe('github:42', { facts: { ci: null } })
